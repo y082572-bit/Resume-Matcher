@@ -10,8 +10,9 @@ from app.config import Settings
 
 
 class TestRequestTimeoutSetting:
-    def test_default_is_240(self):
-        assert Settings.model_fields["request_timeout_seconds"].default == 240
+    def test_default_is_1200(self):
+        """Default increased to 1200s to support Ollama qwen models."""
+        assert Settings.model_fields["request_timeout_seconds"].default == 1200
 
     def test_clamps_below_minimum(self):
         assert Settings(request_timeout_seconds=5).request_timeout_seconds == 30

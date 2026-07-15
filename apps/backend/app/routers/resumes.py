@@ -836,9 +836,9 @@ async def improve_resume_preview_endpoint(
             status_code=504,
             detail=(
                 f"Resume tailoring timed out after {settings.request_timeout_seconds}s. "
-                "If you are running a local LLM, raise REQUEST_TIMEOUT_SECONDS (and the "
-                "matching frontend NEXT_PUBLIC_REQUEST_TIMEOUT_MS); otherwise try a shorter "
-                "job description or a simpler prompt."
+                "If you are running a local LLM (Ollama, llama.cpp), increase "
+                "REQUEST_TIMEOUT_SECONDS in backend .env (and NEXT_PUBLIC_REQUEST_TIMEOUT_MS "
+                "in frontend); otherwise try a shorter job description or a simpler prompt."
             ),
         )
     except Exception as e:

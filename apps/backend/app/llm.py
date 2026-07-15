@@ -659,6 +659,9 @@ async def complete(
 
     Transport retries (429, 500, timeout) are handled by the Router.
     """
+    import time
+    start_time = time.time()
+    
     router, config = get_router(config)
     model_name = get_model_name(config)
 
@@ -678,6 +681,9 @@ async def complete(
             kwargs["temperature"] = temperature
         if config.reasoning_effort:
             kwargs["reasoning_effort"] = config.reasoning_effort
+        
+        # Apply provider-specific parameters (e.g., qwen-specific settings for Ollama)
+        _apply_provider_specific_params(kwargs, config.provider, model_name)
 
         response = await router.acompletion(**kwargs)
 
@@ -961,11 +967,49 @@ def _calculate_timeout(
         "anthropic": 1.2,
         "openrouter": 1.5,  # More variable latency
         "groq": 1.0,
-        "ollama": 2.0,  # Local models can be slower
+        "ollama": 3.0,  # Local models can be much slower, especially qwen with thinking
     }
     provider_factor = provider_factors.get(provider, 1.0)
 
     return int(base * token_factor * provider_factor)
+
+
+def _apply_provider_specific_params(
+    kwargs: dict[str, Any],
+    provider: str,
+    model_name: str,
+) -> None:
+    """Apply provider-specific parameters to LLM kwargs.
+
+    For Ollama qwen models:
+      - Disable thinking (think=false) to speed up responses
+      - Increase context window (num_ctx=8192) for better reasoning
+    
+    Other providers are unaffected.
+    """
+    if provider != "ollama":
+        return
+    
+    # Check if this is a qwen model
+    if "qwen" not in model_name.lower():
+        return
+    
+    # Ollama-specific extention parameters (passed to /api/chat endpoint)
+    if "options" not in kwargs:
+        kwargs["options"] = {}
+    
+    # Disable thinking to avoid timeout overhead
+    kwargs["options"]["stop_reasoning"] = True  # Ollama parameter
+    # Alternative: some Ollama versions use `think` directly
+    kwargs["think"] = False
+    
+    # Increase context window for better encoding of job/resume content
+    kwargs["options"]["num_ctx"] = 8192
+    
+    logging.debug(
+        "Applied Ollama qwen-specific params: think=false, num_ctx=8192 for model=%s",
+        model_name,
+    )
 
 
 def _strip_thinking_tags(content: str) -> str:
@@ -1086,8 +1130,20 @@ async def complete_json(
             "keywords", or "interview_prep". Passed to _appears_truncated for
             context-aware truncation detection and used to tailor retry hints.
     """
+    import time
+    start_time = time.time()
+    
     router, config = get_router(config)
     model_name = get_model_name(config)
+    
+    # Log operation start with model/provider details
+    logging.info(
+        "LLM completion_json START: model=%s, provider=%s, schema_type=%s, max_tokens=%d",
+        model_name,
+        config.provider,
+        schema_type,
+        max_tokens,
+    )
 
     # Build messages
     json_system = (
@@ -1101,8 +1157,10 @@ async def complete_json(
     # Check if we can use JSON mode
     use_json_mode = _supports_json_mode(model_name)
     json_mode_failed = False
+    attempts_made = 0
 
     for attempt in range(retries + 1):
+        attempts_made = attempt + 1
         try:
             kwargs: dict[str, Any] = {
                 "model": "primary",
@@ -1116,6 +1174,9 @@ async def complete_json(
                 kwargs["temperature"] = retry_temp
             if config.reasoning_effort:
                 kwargs["reasoning_effort"] = config.reasoning_effort
+            
+            # Apply provider-specific parameters (e.g., qwen-specific settings for Ollama)
+            _apply_provider_specific_params(kwargs, config.provider, model_name)
 
             # JSON-012: Fallback to prompt-only JSON mode after JSON-mode failure.
             # LiteLLM registry may report support for models that the upstream
@@ -1166,6 +1227,16 @@ async def complete_json(
                     "Parsed JSON appears truncated on final attempt, proceeding with result"
                 )
 
+            # Log successful completion
+            elapsed = time.time() - start_time
+            logging.info(
+                "LLM completion_json SUCCESS: model=%s, provider=%s, schema_type=%s, attempts=%d, elapsed_time=%.2f seconds",
+                model_name,
+                config.provider,
+                schema_type,
+                attempts_made,
+                elapsed,
+            )
             return result
 
         except json.JSONDecodeError as e:

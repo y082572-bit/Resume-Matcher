@@ -251,7 +251,13 @@ class Settings(BaseSettings):
     # (this is why issue #776's backend-only workaround didn't work). Local LLMs
     # (Ollama, llama.cpp, …) often need longer than the 240s default; bounded to
     # [30, 1800]s so a stuck request can't hold a worker indefinitely.
-    request_timeout_seconds: int = 240
+    #
+    # IMPORTANT: This must be longer than the maximum single LLM timeout to account
+    # for multiple LLM calls within a single improve/preview flow. For Ollama with
+    # qwen models at 8192 tokens, a single JSON call can take ~1080s (180 * 2 * 3.0).
+    # Multiply by expected number of LLM calls (2-3) plus parsing/validation overhead
+    # to get a safe end-to-end timeout.
+    request_timeout_seconds: int = 1200
 
     @field_validator("request_timeout_seconds", mode="before")
     @classmethod

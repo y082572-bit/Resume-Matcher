@@ -313,6 +313,8 @@ class Settings(BaseSettings):
 
     # Paths
     data_dir: Path = Path(__file__).parent.parent / "data"
+    # Truth Library path with environment variable support
+    truth_library_path: Path = Path("/app/backend/data/truth_library.json")
 
     @property
     def db_path(self) -> Path:

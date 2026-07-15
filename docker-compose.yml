@@ -7,6 +7,7 @@ services:
       - "${PORT:-3000}:3000"
     volumes:
       - resume-data:/app/backend/data
+      - ../data/truth_library.json:/app/backend/data/truth_library.json:ro
     #secrets:
     #  - llm_api_key
     environment:
@@ -31,6 +32,8 @@ services:
       - LLM_API_BASE=${LLM_API_BASE:-}
       # CORS origins (JSON array format). FRONTEND_BASE_URL is auto-included.
       #- CORS_ORIGINS=["http://localhost:3000","http://127.0.0.1:3000"]
+      # Truth Library configuration
+      - TRUTH_LIBRARY_PATH=/app/backend/data/truth_library.json
     restart: unless-stopped
 
 #secrets:

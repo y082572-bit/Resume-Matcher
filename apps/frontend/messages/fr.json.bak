@@ -176,8 +176,7 @@
       "resume": "CV",
       "coverLetter": "LETTRE DE MOTIVATION",
       "outreach": "MESSAGE DE CONTACT",
-      "jdMatch": "CORRESPONDANCE FP",
-      "interviewPrep": "INTERVIEW PREP"
+      "jdMatch": "CORRESPONDANCE FP"
     },
     "footer": {
       "moduleLabel": "Module Créateur de CV",
@@ -196,9 +195,7 @@
       "outreachDescription": "Générez un message de prise de contact concis pour LinkedIn ou e-mail basé sur votre CV et la fiche de poste.",
       "generateButton": "Générer {title}",
       "coverLetterFooter": "Conseil : personnalisez d'abord pour de meilleurs résultats.",
-      "outreachFooter": "Conseil : restez bref et personnalisé.",
-      "interviewPrepDescription": "Generate role-specific interview preparation based on your tailored resume and job description.",
-      "interviewPrepFooter": "Tip: use this after tailoring to prepare truthful, resume-grounded answers."
+      "outreachFooter": "Conseil : restez bref et personnalisé."
     },
     "regenerateDialog": {
       "title": "Régénérer {title} ?",
@@ -447,8 +444,7 @@
       "editorPanel": "Panneau d'édition",
       "coverLetterEditor": "Éditeur de lettre de motivation",
       "outreachEditor": "Éditeur de message de contact",
-      "jdMatchAnalysis": "Analyse de correspondance FP",
-      "interviewPrep": "Interview Prep"
+      "jdMatchAnalysis": "Analyse de correspondance FP"
     },
     "alerts": {
       "saveNotAvailable": "L'enregistrement n'est disponible que lors de la modification d'un CV existant.",
@@ -465,8 +461,7 @@
       "coverLetterDownloadFailed": "Impossible de télécharger la lettre de motivation : {error}",
       "outreachSaveFailed": "Impossible d'enregistrer le message de contact. Veuillez réessayer.",
       "coverLetterGenerateFailed": "Impossible de générer la lettre de motivation : {error}",
-      "outreachGenerateFailed": "Impossible de générer le message de contact : {error}",
-      "interviewPrepGenerateFailed": "Failed to generate interview preparation: {error}"
+      "outreachGenerateFailed": "Impossible de générer le message de contact : {error}"
     }
   },
   "enrichment": {
@@ -710,11 +705,7 @@
       "customPromptLabel": "Invite personnalisée (optionnelle)",
       "customPromptHelp": "Doit inclure ces espaces réservés (chacun entre accolades) : job_description, resume_data, output_language. Laissez vide pour utiliser l'invite par défaut.",
       "customPromptResetButton": "Rétablir la valeur par défaut",
-      "customPromptErrorMissing": "Espaces réservés manquants : {missing}",
-      "interviewPrep": {
-        "label": "Interview Preparation",
-        "description": "Automatically generate interview preparation alongside saved tailored resumes"
-      }
+      "customPromptErrorMissing": "Espaces réservés manquants : {missing}"
     },
     "promptSettings": {
       "title": "Paramètres d'invite",
@@ -1014,25 +1005,6 @@
       "loadFailed": "Impossible de charger les candidatures.",
       "moveFailed": "Impossible de déplacer la candidature.",
       "deleteFailed": "Impossible de supprimer la ou les candidatures."
-    }
-  },
-  "interviewPrep": {
-    "title": "Interview Prep",
-    "regenerate": "Regenerate",
-    "unavailableTitle": "Interview Prep Not Available",
-    "loadingContextDescription": "Checking the job context for this tailored resume before generation.",
-    "missingContextDescription": "This tailored resume does not have the saved job context required to generate interview preparation. Re-tailor the resume with a job description to use this workflow.",
-    "saveRequiredDescription": "Save this tailored resume before generating interview preparation.",
-    "focusArea": "Focus area",
-    "suggestedAnswerPoints": "Suggested answer points",
-    "whyItMatters": "Why it matters",
-    "preparationSuggestion": "Preparation suggestion",
-    "sections": {
-      "roleFit": "Role-Fit Analysis",
-      "resumeQuestions": "Resume-Based Questions",
-      "projectFollowUps": "Project Follow-Ups",
-      "skillGaps": "Skill Gaps",
-      "talkingPoints": "Talking Points"
     }
   }
 }

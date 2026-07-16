@@ -69,3 +69,23 @@ def init_models_sync(engine: Engine) -> None:
         columns = conn.exec_driver_sql("PRAGMA table_info(resumes)").mappings().all()
         if columns and "interview_prep" not in {column["name"] for column in columns}:
             conn.exec_driver_sql("ALTER TABLE resumes ADD COLUMN interview_prep TEXT")
+
+        # Create append-only triggers on metric_events table idempotent-ly
+        conn.exec_driver_sql(
+            """
+            CREATE TRIGGER IF NOT EXISTS metric_events_no_update
+            BEFORE UPDATE ON metric_events
+            BEGIN
+                SELECT RAISE(FAIL, 'Updates on metric_events are prohibited');
+            END;
+            """
+        )
+        conn.exec_driver_sql(
+            """
+            CREATE TRIGGER IF NOT EXISTS metric_events_no_delete
+            BEFORE DELETE ON metric_events
+            BEGIN
+                SELECT RAISE(FAIL, 'Deletes on metric_events are prohibited');
+            END;
+            """
+        )

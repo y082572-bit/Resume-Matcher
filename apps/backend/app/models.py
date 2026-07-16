@@ -9,7 +9,7 @@ never sees ORM objects — preserving the TinyDB-era contracts.
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, Index, Integer, String, Text, UniqueConstraint, text
+from sqlalchemy import JSON, Boolean, Index, Integer, String, Text, UniqueConstraint, text, CheckConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -135,3 +135,54 @@ class ApiKey(Base):
     provider: Mapped[str] = mapped_column(String, primary_key=True)
     ciphertext: Mapped[str] = mapped_column(Text)
     updated_at: Mapped[str] = mapped_column(String, default=_utcnow_iso)
+
+
+class MetricEvent(Base):
+    """Zdarzenie metryki rejestrujące historyczną akcję użytkownika (append-only)."""
+
+    __tablename__ = "metric_events"
+
+    sequence_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    event_id: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    operation_key: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    event_type: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    entity_type: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    entity_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    lifecycle_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    from_state: Mapped[str | None] = mapped_column(String, nullable=True)
+    to_state: Mapped[str | None] = mapped_column(String, nullable=True)
+    occurred_at: Mapped[str] = mapped_column(String, default=_utcnow_iso, nullable=False)
+    recorded_at: Mapped[str] = mapped_column(String, default=_utcnow_iso, nullable=False)
+    source: Mapped[str] = mapped_column(String, default="USER", nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "event_type IN ('BASELINE', 'ENTITY_CREATED', 'ENTITY_DELETED', 'RESUME_GENERATED', 'JOB_ANALYZED', 'APPLICATION_STATUS_CHANGED')",
+            name="ck_metric_events_event_type"
+        ),
+        CheckConstraint(
+            "entity_type IN ('RESUME', 'JOB', 'APPLICATION')",
+            name="ck_metric_events_entity_type"
+        ),
+        CheckConstraint(
+            "source IN ('USER', 'SYSTEM', 'BOOTSTRAP')",
+            name="ck_metric_events_source"
+        ),
+    )
+
+
+class MetricTrackingState(Base):
+    """Przechowuje metadane dotyczące stanu i historii działania modułu kolektora."""
+
+    __tablename__ = "metric_tracking_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    tracking_started_at: Mapped[str] = mapped_column(String, default=_utcnow_iso, nullable=False)
+    bootstrap_completed_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    historical_complete: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_metric_tracking_state_singleton"),
+    )

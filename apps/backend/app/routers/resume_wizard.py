@@ -7,6 +7,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException
 
 from app.database import db
+from app.services.project_metrics import MetricEventSource
 from app.schemas.models import ResumeData, normalize_resume_data
 from app.schemas.resume_wizard import (
     ResumeWizardFinalizeRequest,
@@ -98,7 +99,7 @@ async def finalize_resume_wizard(
         )
         if not resume.get("is_master", False):
             try:
-                await db.delete_resume(resume["resume_id"])
+                await db.delete_resume(resume["resume_id"], source=MetricEventSource.SYSTEM)
             except Exception as e:
                 logger.error(
                     "Failed to clean up non-master wizard resume %s: %s",

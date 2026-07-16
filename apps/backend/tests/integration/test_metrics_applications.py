@@ -763,8 +763,8 @@ async def test_report_current_metrics_counted_from_applications_table(initialize
     # 42. Job & Resume current: Job is now AVAILABLE (value 0), Resume is UNSUPPORTED
     assert get_measure(MetricType.JOB_OFFERS_SAVED).value == 0
     assert get_measure(MetricType.JOB_OFFERS_SAVED).availability == MetricAvailability.AVAILABLE
-    assert get_measure(MetricType.RESUMES_GENERATED).value is None
-    assert get_measure(MetricType.RESUMES_GENERATED).availability == MetricAvailability.UNSUPPORTED
+    assert get_measure(MetricType.RESUMES_GENERATED).value == 0
+    assert get_measure(MetricType.RESUMES_GENERATED).availability == MetricAvailability.AVAILABLE
 
 
 # --- TRACKER AUTOCREATE TESTS ---

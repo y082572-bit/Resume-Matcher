@@ -748,13 +748,13 @@ async def test_analyzed_lifetime_comes_from_events(initialized_db):
     assert mv.current.value == 0
 
 
-async def test_resume_current_remains_unsupported(initialized_db):
-    """38. Verify resumes_generated current remains UNSUPPORTED."""
+async def test_resume_current_is_supported(initialized_db):
+    """38. Verify resumes_generated current is AVAILABLE."""
     async with initialized_db._session() as session:
         report = await build_metrics_report(session)
     mv = next(m for m in report.metrics if m.metric_name == MetricType.RESUMES_GENERATED)
-    assert mv.current.availability == MetricAvailability.UNSUPPORTED
-    assert mv.current.value is None
+    assert mv.current.availability == MetricAvailability.AVAILABLE
+    assert mv.current.value == 0
 
 
 # --- API LEAKAGE ---

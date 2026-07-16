@@ -597,7 +597,7 @@ async def build_metrics_report(session: AsyncSession) -> MetricSummaryReport:
         historical_complete=historical_complete,
     )
 
-    from app.models import Application, Job
+    from app.models import Application, Job, Resume
     from sqlalchemy import func
     res_apps = await session.execute(select(Application.status))
     app_statuses = res_apps.scalars().all()
@@ -625,6 +625,12 @@ async def build_metrics_report(session: AsyncSession) -> MetricSummaryReport:
     )
     job_offers_analyzed_current = res_analyzed.scalar() or 0
 
+    # resumes_generated current
+    res_resumes = await session.execute(
+        select(func.count()).select_from(Resume).where(Resume.parent_id.is_not(None))
+    )
+    resumes_generated_current = res_resumes.scalar() or 0
+
     app_current_map = {
         MetricType.APPLICATIONS_CREATED: total_apps,
         MetricType.APPLICATIONS_SUBMITTED: applied_apps,
@@ -634,6 +640,7 @@ async def build_metrics_report(session: AsyncSession) -> MetricSummaryReport:
         MetricType.APPLICATIONS_ACCEPTED: accepted_apps,
         MetricType.JOB_OFFERS_SAVED: job_offers_saved_current,
         MetricType.JOB_OFFERS_ANALYZED: job_offers_analyzed_current,
+        MetricType.RESUMES_GENERATED: resumes_generated_current,
     }
 
     new_metrics = []

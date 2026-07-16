@@ -51,6 +51,12 @@ class Resume(Base):
     original_markdown: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=_utcnow_iso)
     updated_at: Mapped[str] = mapped_column(String, default=_utcnow_iso)
+    lifecycle_token: Mapped[str] = mapped_column(
+        String,
+        unique=True,
+        nullable=False,
+        default=lambda: str(uuid4()),
+    )
 
     __table_args__ = (
         # At most one master resume. Partial unique index enforces the invariant

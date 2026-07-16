@@ -32,10 +32,17 @@ from app.services.project_metrics import (
     MetricEventSource,
     MetricEventInput,
     record_metric_event,
+    RecordEventStatus,
     ApplicationStatusConflictError,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _require_metric_event_recorded(result, msg: str) -> None:
+    if result.status == RecordEventStatus.DUPLICATE:
+        raise ValueError(f"Duplicate metric event detected: {msg}")
+
 
 # Columns that are first-class on the jobs table; everything else the pipeline
 # attaches dynamically is stored in ``metadata_json`` (see Job model).
@@ -203,6 +210,7 @@ class Database:
         title: str | None = None,
         original_markdown: str | None = None,
         interview_prep: str | None = None,
+        source: MetricEventSource = MetricEventSource.USER,
     ) -> dict[str, Any]:
         """Create a new resume entry.
 
@@ -210,9 +218,21 @@ class Database:
         """
         resume_id = str(uuid4())
         now = _now()
+        lifecycle_token = str(uuid4())
         async with self._session() as session:
-            session.add(
-                Resume(
+            try:
+                if parent_id is not None:
+                    if not isinstance(parent_id, str):
+                        raise ValueError("parent_id must be a string")
+                    if not parent_id.strip():
+                        raise ValueError("parent_id cannot be empty or blank")
+                    parent_exists = await session.get(Resume, parent_id)
+                    if parent_exists is None:
+                        raise ValueError(f"Parent resume not found: {parent_id}")
+
+                effective_source = MetricEventSource.SYSTEM if parent_id is not None else source
+
+                row = Resume(
                     resume_id=resume_id,
                     content=content,
                     content_type=content_type,
@@ -228,9 +248,46 @@ class Database:
                     original_markdown=original_markdown,
                     created_at=now,
                     updated_at=now,
+                    lifecycle_token=lifecycle_token,
                 )
-            )
-            await session.commit()
+                session.add(row)
+                await session.flush()
+
+                # 1. ENTITY_CREATED event
+                event_input = MetricEventInput(
+                    event_id=str(uuid4()),
+                    operation_key=f"create:resume:{resume_id}:lc:{lifecycle_token}",
+                    event_type=MetricEventType.ENTITY_CREATED,
+                    entity_type=MetricEntityType.RESUME,
+                    entity_id=resume_id,
+                    lifecycle_id=lifecycle_token,
+                    from_state=None,
+                    to_state=None,
+                    source=effective_source,
+                )
+                res_created = await record_metric_event(session, event_input)
+                _require_metric_event_recorded(res_created, "ENTITY_CREATED duplicate")
+
+                # 2. RESUME_GENERATED event if parent_id is not None
+                if parent_id is not None:
+                    gen_event_input = MetricEventInput(
+                        event_id=str(uuid4()),
+                        operation_key=f"generate:resume:{resume_id}:lc:{lifecycle_token}",
+                        event_type=MetricEventType.RESUME_GENERATED,
+                        entity_type=MetricEntityType.RESUME,
+                        entity_id=resume_id,
+                        lifecycle_id=lifecycle_token,
+                        from_state=None,
+                        to_state=None,
+                        source=MetricEventSource.SYSTEM,
+                    )
+                    res_generated = await record_metric_event(session, gen_event_input)
+                    _require_metric_event_recorded(res_generated, "RESUME_GENERATED duplicate")
+
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
 
         doc: dict[str, Any] = {
             "resume_id": resume_id,
@@ -264,6 +321,7 @@ class Database:
         original_markdown: str | None = None,
         title: str | None = None,
         interview_prep: str | None = None,
+        source: MetricEventSource = MetricEventSource.USER,
     ) -> dict[str, Any]:
         """Create a new resume with atomic master assignment.
 
@@ -299,6 +357,7 @@ class Database:
                 interview_prep=interview_prep,
                 original_markdown=original_markdown,
                 title=title,
+                source=source,
             )
 
     async def get_resume(self, resume_id: str) -> dict[str, Any] | None:
@@ -326,6 +385,10 @@ class Database:
             row = await session.get(Resume, resume_id)
             if row is None:
                 raise ValueError(f"Resume not found: {resume_id}")
+            if "parent_id" in updates and updates["parent_id"] != row.parent_id:
+                raise ValueError("parent_id is immutable")
+            if "lifecycle_token" in updates and updates["lifecycle_token"] != row.lifecycle_token:
+                raise ValueError("lifecycle_token is immutable")
             for key, value in updates.items():
                 if hasattr(row, key):
                     setattr(row, key, value)
@@ -335,15 +398,38 @@ class Database:
             await session.commit()
             return self._resume_to_dict(row)
 
-    async def delete_resume(self, resume_id: str) -> bool:
+    async def delete_resume(
+        self,
+        resume_id: str,
+        source: MetricEventSource = MetricEventSource.USER,
+    ) -> bool:
         """Delete resume by ID."""
         async with self._session() as session:
-            row = await session.get(Resume, resume_id)
-            if row is None:
-                return False
-            await session.delete(row)
-            await session.commit()
-            return True
+            try:
+                row = await session.get(Resume, resume_id)
+                if row is None:
+                    return False
+                lifecycle_token = row.lifecycle_token
+                # Record ENTITY_DELETED event
+                event_input = MetricEventInput(
+                    event_id=str(uuid4()),
+                    operation_key=f"delete:resume:{resume_id}:lc:{lifecycle_token}",
+                    event_type=MetricEventType.ENTITY_DELETED,
+                    entity_type=MetricEntityType.RESUME,
+                    entity_id=resume_id,
+                    lifecycle_id=lifecycle_token,
+                    from_state=None,
+                    to_state=None,
+                    source=source,
+                )
+                res_deleted = await record_metric_event(session, event_input)
+                _require_metric_event_recorded(res_deleted, "ENTITY_DELETED duplicate")
+                await session.delete(row)
+                await session.commit()
+                return True
+            except Exception:
+                await session.rollback()
+                raise
 
     async def list_resumes(self) -> list[dict[str, Any]]:
         """List all resumes."""

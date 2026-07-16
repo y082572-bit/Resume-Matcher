@@ -1218,6 +1218,7 @@ async def improve_resume_confirm_endpoint(
             outreach_message=outreach_message,
             interview_prep=_serialize_interview_prep(interview_prep),
             title=title,
+            source=MetricEventSource.SYSTEM,
         )
 
         improvements_payload = [imp.model_dump() for imp in request.improvements]
@@ -1462,6 +1463,7 @@ async def improve_resume_endpoint(
             outreach_message=outreach_message,
             interview_prep=_serialize_interview_prep(interview_prep),
             title=title,
+            source=MetricEventSource.SYSTEM,
         )
 
         # Store improvement record

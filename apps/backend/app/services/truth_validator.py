@@ -1,15 +1,15 @@
 """Truth Validator service.
 
 Deterministic audit of resume claims against the Truth Library.
-Phase 2B1A: Core models and numeric value extraction.
+Enforces strict scoping rules and detects violations including unsupported numbers,
+cross-employment claims, duplicates, and blocked facts.
 
 Provides:
 - TruthDecision: Audit decision enum (PASS, REVIEW, BLOCK)
 - TruthViolation: Details of a single violation
 - TruthAuditResult: Complete audit result
 - ResumeClaim: A claim made in the resume
-- extract_numeric_values(): Extract numbers from text
-- audit_resume_claims(): Main validation function (Phase 2B1B, not yet implemented)
+- audit_resume_claims(): Main validation function
 """
 
 import re
@@ -17,7 +17,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
-from app.services.truth_index import TruthIndex
+from app.services.truth_index import (
+    TruthIndex,
+    EmploymentTruthScope,
+    normalize_truth_text,
+)
 
 
 class TruthDecision(str, Enum):
@@ -87,35 +91,145 @@ class TruthAuditResult:
     warnings: list[TruthViolation] = field(default_factory=list)
 
 
-def extract_numeric_values(text: str) -> list[str]:
-    """Extract numeric values from text deterministically.
+def audit_resume_claims(
+    claims: list[ResumeClaim],
+    truth_index: TruthIndex,
+    original_claims: Optional[list[ResumeClaim]] = None,
+) -> TruthAuditResult:
+    """Audit resume claims against the Truth Library.
 
-    Detects:
-    - Integers (e.g., 100, 5)
-    - Decimals with dot (e.g., 1.5, 99.9)
-    - Decimals with comma (e.g., 1,5)
-    - Percentages (e.g., 50%, 116%)
-    - Ranges with hyphen (e.g., 10-15, 10 - 15)
-    - Ranges with en-dash (e.g., 10–15, 10 – 15)
-    - Numbers with spaces (e.g., 85 agencies, 1 000 000)
-    - Amounts/quantities
-
-    Preserves percentages and ranges as single values.
+    Enforces strict employment scoping, detects unsupported numbers,
+    cross-employment anomalies, duplicates, and blocked rules.
 
     Args:
-        text: Input text to extract numbers from
+        claims: List of claims to audit
+        truth_index: Indexed Truth Library for validation
+        original_claims: Original claims before modification (for unchanged detection)
 
     Returns:
-        List of detected numeric patterns, ordered by appearance
+        TruthAuditResult with violations and final decision
     """
+    result = TruthAuditResult(passed=True, requires_review=False)
+
+    # Build original claims map for unchanged detection
+    original_map = {}
+    if original_claims:
+        for claim in original_claims:
+            key = (claim.employment_id, normalize_truth_text(claim.text))
+            original_map[key] = claim
+
+    # Track seen normalized texts per employment to detect duplicates
+    seen_per_employment = {}
+
+    for claim in claims:
+        claim_violations = []
+
+        # Rule A: Unchanged facts from original_claims
+        claim_key = (claim.employment_id, normalize_truth_text(claim.text))
+        if claim_key in original_map:
+            violation = TruthViolation(
+                code="TRUTH_ORIGINAL_CLAIM",
+                decision=TruthDecision.PASS,
+                message="Unchanged fact from original resume",
+                claim_text=claim.text,
+                employment_id=claim.employment_id,
+                company=claim.company,
+                source_path=claim.source_path,
+            )
+            claim_violations.append(violation)
+        else:
+            # Rule D: Check for duplicates within same employment
+            normalized_text = normalize_truth_text(claim.text)
+            employment_key = claim.employment_id
+
+            if employment_key not in seen_per_employment:
+                seen_per_employment[employment_key] = []
+
+            # Check if this normalized text was already seen in this employment
+            if normalized_text in seen_per_employment[employment_key]:
+                violation = TruthViolation(
+                    code="TRUTH_DUPLICATE_CLAIM",
+                    decision=TruthDecision.BLOCK,
+                    message=f"Duplicate claim in {claim.company}: identical text already present",
+                    claim_text=claim.text,
+                    employment_id=claim.employment_id,
+                    company=claim.company,
+                )
+                claim_violations.append(violation)
+            else:
+                seen_per_employment[employment_key].append(normalized_text)
+
+                # Rule C: Detect new numbers
+                numbers = _extract_numbers(claim.text)
+                numeric_violation = _check_numeric_violation(
+                    claim, numbers, truth_index
+                )
+                if numeric_violation:
+                    claim_violations.append(numeric_violation)
+                else:
+                    # Rule E: Check blocked rules
+                    blocked_violation = _check_blocked_rule(claim, truth_index)
+                    if blocked_violation:
+                        claim_violations.append(blocked_violation)
+                    else:
+                        # Rule B: Check exact match in Truth Library
+                        supported_violation = _check_supported_fact(
+                            claim, truth_index
+                        )
+                        if supported_violation:
+                            claim_violations.append(supported_violation)
+                        else:
+                            # Rule F: Ungrounded text
+                            if not numbers:  # Has no numbers
+                                violation = TruthViolation(
+                                    code="TRUTH_UNGROUNDED_TEXT",
+                                    decision=TruthDecision.REVIEW,
+                                    message="Claim lacks explicit source verification in Truth Library",
+                                    claim_text=claim.text,
+                                    employment_id=claim.employment_id,
+                                    company=claim.company,
+                                )
+                                claim_violations.append(violation)
+
+        # Add violations to result using the first (highest priority) violation
+        # for final decision, or collect all if needed
+        for violation in claim_violations:
+            result.violations.append(violation)
+
+            if violation.decision == TruthDecision.BLOCK:
+                result.blocking_errors.append(violation)
+            elif violation.decision == TruthDecision.REVIEW:
+                result.warnings.append(violation)
+                result.requires_review = True
+
+    # Rule 6: Final decision
+    result.passed = len(result.blocking_errors) == 0
+
+    return result
+
+
+def _extract_numbers(text: str) -> list[str]:
+    """Extract all numbers from claim text.
+
+    Detects:
+    - Integers
+    - Decimals
+    - Percentages
+    - Ranges (10–15, 10-15)
+    - Quantities with units
+
+    Returns:
+        List of detected numeric patterns
+    """
+    # Patterns: percentages, ranges, decimals, integers, spaced numbers
     patterns = [
-        r"\d+%",  # Percentages (e.g., 116%, 50%)
-        r"\d+\s*–\s*\d+",  # En-dash ranges (e.g., 10–15, 10 – 15)
-        r"\d+\s*-\s*\d+",  # Hyphen ranges (e.g., 10-15, 10 - 15)
-        r"\d+\s*,\s*\d+",  # Comma-separated decimals (e.g., 1,5)
-        r"\d+\.\d+",  # Dot-separated decimals (e.g., 1.5, 99.99)
-        r"\d+\s+\d+",  # Spaced numbers (e.g., 85 agencies, 1 000 000)
-        r"\d+",  # Plain integers (e.g., 5, 100, 2024)
+        r"\d+%",  # Percentages (e.g., 116%)
+        r"\d+\s*–\s*\d+",  # En-dash ranges (e.g., 10–15)
+        r"\d+\s*-\s*\d+",  # Hyphen ranges (e.g., 10-15)
+        r"\d+\s*,\s*\d+",  # Comma decimals (e.g., 1,5)
+        r"\d+\.\d+",  # Dot decimals (e.g., 1.5)
+        r"\d+\s+\d+",  # Spaced numbers (e.g., 85 agencji)
+        r"\d+",  # Plain integers
     ]
 
     found = []
@@ -126,27 +240,149 @@ def extract_numeric_values(text: str) -> list[str]:
     return found
 
 
-def audit_resume_claims(
-    claims: list[ResumeClaim],
+def _check_numeric_violation(
+    claim: ResumeClaim,
+    numbers: list[str],
     truth_index: TruthIndex,
-    original_claims: Optional[list[ResumeClaim]] = None,
-) -> TruthAuditResult:
-    """Audit resume claims against the Truth Library.
-
-    This is Phase 2B1B - full implementation placeholder.
-
-    Args:
-        claims: List of claims to audit
-        truth_index: Indexed Truth Library for validation
-        original_claims: Original claims before modification (for unchanged detection)
+) -> Optional[TruthViolation]:
+    """Check if claim contains unsupported or cross-employment numbers.
 
     Returns:
-        TruthAuditResult with violations and final decision
-
-    Raises:
-        NotImplementedError: Phase 2B1B implementation not yet complete
+        TruthViolation if violation found, None otherwise
     """
-    raise NotImplementedError(
-        "Truth Validator Phase 2B1B is not implemented. "
-        "Phase 2B1A (models and numeric extraction) is complete."
-    )
+    if not numbers:
+        return None
+
+    # Get employment scope from truth_index
+    scope = truth_index.employment_by_id.get(claim.employment_id)
+    if not scope:
+        return None
+
+    # Normalize numeric facts from this scope
+    scope_numbers = set()
+    for fact in scope.numeric_results:
+        extracted = _extract_numbers(fact.original_text)
+        scope_numbers.update(extracted)
+
+    normalized_claim_text = normalize_truth_text(claim.text)
+
+    # Check each number in claim
+    for number in numbers:
+        if number not in scope_numbers:
+            # Number not in this employment's facts
+            # Check if it exists in other employments
+            for other_id, other_scope in truth_index.employment_by_id.items():
+                if other_id != claim.employment_id:
+                    for other_fact in other_scope.numeric_results:
+                        other_extracted = _extract_numbers(other_fact.original_text)
+                        if number in other_extracted:
+                            return TruthViolation(
+                                code="TRUTH_CROSS_EMPLOYMENT_NUMBER",
+                                decision=TruthDecision.BLOCK,
+                                message=f"Number '{number}' belongs to {other_scope.company}, not {claim.company}",
+                                claim_text=claim.text,
+                                employment_id=claim.employment_id,
+                                company=claim.company,
+                                detected_values=[number],
+                            )
+
+            # Number not found in any employment's numeric results
+            return TruthViolation(
+                code="TRUTH_UNSUPPORTED_NUMBER",
+                decision=TruthDecision.BLOCK,
+                message=f"Number '{number}' not found in {claim.company} Truth Library facts",
+                claim_text=claim.text,
+                employment_id=claim.employment_id,
+                company=claim.company,
+                detected_values=[number],
+            )
+
+    return None
+
+
+def _check_blocked_rule(
+    claim: ResumeClaim,
+    truth_index: TruthIndex,
+) -> Optional[TruthViolation]:
+    """Check if claim matches a blocked rule.
+
+    Exceptions in truth_index.exceptions must be honored.
+
+    Returns:
+        TruthViolation if blocked, None otherwise
+    """
+    normalized_claim = normalize_truth_text(claim.text)
+
+    for blocked_rule in truth_index.blocked_rules:
+        normalized_rule = normalize_truth_text(blocked_rule)
+
+        # Check if claim contains the blocked rule text
+        if normalized_rule in normalized_claim:
+            # Check for exceptions
+            is_exception = False
+            for exception in truth_index.exceptions:
+                normalized_exception = normalize_truth_text(exception)
+                # Exception applies to this employment if it mentions the company
+                # or if it's a global exception
+                if normalized_exception in normalized_claim:
+                    is_exception = True
+                    break
+
+            if not is_exception:
+                return TruthViolation(
+                    code="TRUTH_BLOCKED_RULE",
+                    decision=TruthDecision.BLOCK,
+                    message=f"Claim matches blocked rule: {blocked_rule}",
+                    claim_text=claim.text,
+                    employment_id=claim.employment_id,
+                    company=claim.company,
+                )
+
+    return None
+
+
+def _check_supported_fact(
+    claim: ResumeClaim,
+    truth_index: TruthIndex,
+) -> Optional[TruthViolation]:
+    """Check if claim matches exactly a fact in Truth Library for same employment.
+
+    Returns:
+        TruthViolation with PASS decision if match found, None if no exact match
+    """
+    normalized_claim = normalize_truth_text(claim.text)
+
+    # Get employment scope from truth_index
+    scope = truth_index.employment_by_id.get(claim.employment_id)
+    if not scope:
+        return None
+
+    # Check all facts in this employment scope
+    for fact in scope.allowed_facts:
+        if normalized_claim == fact.normalized_text:
+            return TruthViolation(
+                code="TRUTH_SUPPORTED_FACT",
+                decision=TruthDecision.PASS,
+                message="Fact verified against Truth Library",
+                claim_text=claim.text,
+                employment_id=claim.employment_id,
+                company=claim.company,
+                source_path=fact.source_reference,
+                evidence_references=[fact.source_reference],
+            )
+
+    # Also check global facts (not employment-scoped)
+    for fact in truth_index.globally_allowed_facts:
+        if normalized_claim == fact.normalized_text:
+            return TruthViolation(
+                code="TRUTH_SUPPORTED_FACT",
+                decision=TruthDecision.PASS,
+                message="Fact verified against global Truth Library",
+                claim_text=claim.text,
+                employment_id=claim.employment_id,
+                company=claim.company,
+                source_path=fact.source_reference,
+                evidence_references=[fact.source_reference],
+            )
+
+    return None

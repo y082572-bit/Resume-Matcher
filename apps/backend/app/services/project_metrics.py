@@ -71,6 +71,12 @@ class MetricAggregationError(Exception):
     pass
 
 
+class ApplicationStatusConflictError(Exception):
+    """Raised when a concurrency conflict occurs during optimistic status update."""
+    pass
+
+
+
 VALID_APPLICATION_STATUSES = {"saved", "applied", "no_response", "response", "interview", "accepted", "rejected"}
 
 
@@ -584,12 +590,65 @@ async def build_metrics_report(session: AsyncSession) -> MetricSummaryReport:
     event_result = await session.execute(select(MetricEvent))
     events = event_result.scalars().all()
 
-    return aggregate_events(
+    base_report = aggregate_events(
         events=list(events),
         tracking_started_at=tracking_started_at,
         generated_at=_utcnow_iso(),
         historical_complete=historical_complete,
     )
+
+    from app.models import Application
+    res_apps = await session.execute(select(Application.status))
+    app_statuses = res_apps.scalars().all()
+
+    total_apps = len(app_statuses)
+    applied_apps = sum(1 for s in app_statuses if s == "applied")
+    response_apps = sum(1 for s in app_statuses if s in ("response", "interview", "accepted", "rejected"))
+    interview_apps = sum(1 for s in app_statuses if s == "interview")
+    rejected_apps = sum(1 for s in app_statuses if s == "rejected")
+    accepted_apps = sum(1 for s in app_statuses if s == "accepted")
+
+    app_current_map = {
+        MetricType.APPLICATIONS_CREATED: total_apps,
+        MetricType.APPLICATIONS_SUBMITTED: applied_apps,
+        MetricType.EMPLOYER_RESPONSES: response_apps,
+        MetricType.INTERVIEWS: interview_apps,
+        MetricType.REJECTIONS: rejected_apps,
+        MetricType.APPLICATIONS_ACCEPTED: accepted_apps,
+    }
+
+    new_metrics = []
+    for mv in base_report.metrics:
+        if mv.metric_name in app_current_map:
+            val = app_current_map[mv.metric_name]
+            new_mv = MetricValue(
+                metric_name=mv.metric_name,
+                current=MetricMeasure(value=val, availability=MetricAvailability.AVAILABLE),
+                lifetime=mv.lifetime,
+                peak=mv.peak,
+                archived=mv.archived,
+            )
+            new_metrics.append(new_mv)
+        elif mv.metric_name == MetricType.STATUS_CHANGES:
+            new_mv = MetricValue(
+                metric_name=mv.metric_name,
+                current=MetricMeasure(value=None, availability=MetricAvailability.UNSUPPORTED),
+                lifetime=mv.lifetime,
+                peak=mv.peak,
+                archived=mv.archived,
+            )
+            new_metrics.append(new_mv)
+        else:
+            new_metrics.append(mv)
+
+    return MetricSummaryReport(
+        metrics=tuple(new_metrics),
+        tracking_started_at=base_report.tracking_started_at,
+        generated_at=base_report.generated_at,
+        historical_complete=base_report.historical_complete,
+        capabilities=base_report.capabilities,
+    )
+
 
 
 async def initialize_metric_tracking_state(

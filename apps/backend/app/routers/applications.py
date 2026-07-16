@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.database import db
 from app.services.improver import extract_job_keywords
+from app.services.project_metrics import ApplicationStatusConflictError
 from app.schemas import (
     APPLICATION_STATUS_ORDER,
     ApplicationActionResponse,
@@ -126,6 +127,8 @@ async def bulk_update_applications(request: BulkStatusUpdate) -> ApplicationActi
     """Move many cards to one column."""
     try:
         moved = await db.bulk_update_applications(request.application_ids, request.status.value)
+    except ApplicationStatusConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         logger.error("Failed to bulk-update applications: %s", e)
         raise HTTPException(status_code=500, detail="Failed to move applications. Please try again.")
@@ -141,6 +144,8 @@ async def update_application(application_id: str, request: ApplicationUpdate) ->
         updates["status"] = request.status.value
     try:
         updated = await db.update_application(application_id, updates)
+    except ApplicationStatusConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         logger.error("Failed to update application %s: %s", application_id, e)
         raise HTTPException(status_code=500, detail="Failed to update application. Please try again.")

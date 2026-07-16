@@ -19,6 +19,7 @@ from app.config_cache import get_content_language, load_config as _load_config
 from app.database import db
 from app.pdf import render_resume_pdf, PDFRenderError
 from app.config import settings
+from app.services.project_metrics import MetricEventSource
 
 logger = logging.getLogger(__name__)
 from app.schemas import (
@@ -93,6 +94,7 @@ async def _auto_create_tracker_application(
             status="applied",
             company=company,
             role=role,
+            source=MetricEventSource.SYSTEM,
         )
     except Exception as e:  # noqa: BLE001 - tracker is non-critical
         logger.warning("Failed to auto-create tracker application: %s", e)

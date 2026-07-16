@@ -70,6 +70,91 @@ def init_models_sync(engine: Engine) -> None:
         if columns and "interview_prep" not in {column["name"] for column in columns}:
             conn.exec_driver_sql("ALTER TABLE resumes ADD COLUMN interview_prep TEXT")
 
+        # Idempotent migration for applications table
+        app_cols = conn.exec_driver_sql("PRAGMA table_info(applications)").mappings().all()
+        if app_cols:
+            existing_app_cols = {column["name"] for column in app_cols}
+            if "status_version" not in existing_app_cols:
+                conn.exec_driver_sql("ALTER TABLE applications ADD COLUMN status_version INTEGER NOT NULL DEFAULT 0")
+            if "lifecycle_token" not in existing_app_cols:
+                conn.exec_driver_sql("ALTER TABLE applications ADD COLUMN lifecycle_token TEXT")
+
+            # Backfill/repair NULL, empty, or duplicate lifecycle_tokens
+            rows = conn.exec_driver_sql("SELECT application_id, lifecycle_token FROM applications").mappings().all()
+            token_counts = {}
+            for r in rows:
+                tok = r["lifecycle_token"]
+                if tok is not None and len(tok.strip()) > 0:
+                    token_counts[tok] = token_counts.get(tok, 0) + 1
+
+            processed_tokens = set()
+            from uuid import uuid4
+            for r in rows:
+                app_id = r["application_id"]
+                tok = r["lifecycle_token"]
+
+                needs_backfill = False
+                if tok is None or len(tok.strip()) == 0:
+                    needs_backfill = True
+                elif token_counts.get(tok, 0) > 1:
+                    if tok in processed_tokens:
+                        needs_backfill = True
+                    else:
+                        processed_tokens.add(tok)
+                else:
+                    processed_tokens.add(tok)
+
+                if needs_backfill:
+                    new_token = str(uuid4())
+                    while new_token in processed_tokens:
+                        new_token = str(uuid4())
+                    conn.exec_driver_sql(
+                        "UPDATE applications SET lifecycle_token = ? WHERE application_id = ?",
+                        (new_token, app_id)
+                    )
+                    processed_tokens.add(new_token)
+
+            # Always ensure the unique index exists
+            conn.exec_driver_sql(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_applications_lifecycle_token ON applications(lifecycle_token)"
+            )
+
+        # Create triggers for applications lifecycle token checks
+        conn.exec_driver_sql(
+            """
+            CREATE TRIGGER IF NOT EXISTS applications_lifecycle_required_insert
+            BEFORE INSERT ON applications
+            FOR EACH ROW
+            BEGIN
+                SELECT RAISE(FAIL, 'lifecycle_token cannot be NULL or empty')
+                WHERE NEW.lifecycle_token IS NULL OR length(trim(NEW.lifecycle_token)) = 0;
+            END;
+            """
+        )
+        conn.exec_driver_sql(
+            """
+            CREATE TRIGGER IF NOT EXISTS applications_lifecycle_required_update
+            BEFORE UPDATE ON applications
+            FOR EACH ROW
+            BEGIN
+                SELECT RAISE(FAIL, 'lifecycle_token cannot be NULL or empty')
+                WHERE NEW.lifecycle_token IS NULL OR length(trim(NEW.lifecycle_token)) = 0;
+            END;
+            """
+        )
+        conn.exec_driver_sql(
+            """
+            CREATE TRIGGER IF NOT EXISTS applications_lifecycle_immutable
+            BEFORE UPDATE ON applications
+            FOR EACH ROW
+            BEGIN
+                SELECT RAISE(FAIL, 'lifecycle_token is immutable')
+                WHERE OLD.lifecycle_token IS NOT NULL AND length(trim(OLD.lifecycle_token)) > 0
+                  AND NEW.lifecycle_token != OLD.lifecycle_token;
+            END;
+            """
+        )
+
         # Create append-only triggers on metric_events table idempotent-ly
         conn.exec_driver_sql(
             """

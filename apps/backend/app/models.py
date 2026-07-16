@@ -8,6 +8,7 @@ never sees ORM objects — preserving the TinyDB-era contracts.
 
 from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import JSON, Boolean, Index, Integer, String, Text, UniqueConstraint, text, CheckConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -118,8 +119,11 @@ class Application(Base):
     applied_at: Mapped[str | None] = mapped_column(String, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     position: Mapped[int] = mapped_column(Integer, default=0)
+    status_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    lifecycle_token: Mapped[str] = mapped_column(String, default=lambda: str(uuid4()), unique=True, nullable=False)
     created_at: Mapped[str] = mapped_column(String, default=_utcnow_iso)
     updated_at: Mapped[str] = mapped_column(String, default=_utcnow_iso)
+
 
 
 class ApiKey(Base):

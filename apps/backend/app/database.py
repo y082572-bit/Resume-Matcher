@@ -26,6 +26,14 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.config import settings
 from app.db_engine import init_models_sync, make_async_engine, make_sync_engine
 from app.models import ApiKey, Application, Improvement, Job, Resume
+from app.services.project_metrics import (
+    MetricEventType,
+    MetricEntityType,
+    MetricEventSource,
+    MetricEventInput,
+    record_metric_event,
+    ApplicationStatusConflictError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -490,7 +498,6 @@ class Database:
         for index, row in enumerate(result.scalars().all()):
             if row.position != index:
                 row.position = index
-
     async def create_application(
         self,
         job_id: str,
@@ -501,6 +508,7 @@ class Database:
         role: str | None = None,
         applied_at: str | None = None,
         notes: str | None = None,
+        source: MetricEventSource = MetricEventSource.USER,
     ) -> dict[str, Any]:
         """Create a tracker card, deduped on (job_id, resume_id).
 
@@ -521,6 +529,7 @@ class Database:
             if applied_at is None and status != "saved":
                 applied_at = now
             position = await self._next_position(session, status)
+            lifecycle_token = str(uuid4())
             row = Application(
                 application_id=str(uuid4()),
                 job_id=job_id,
@@ -532,31 +541,47 @@ class Database:
                 applied_at=applied_at,
                 notes=notes,
                 position=position,
+                status_version=0,
+                lifecycle_token=lifecycle_token,
                 created_at=now,
                 updated_at=now,
             )
-            session.add(row)
             try:
-                await session.commit()
-            except IntegrityError:
-                # A concurrent create won the (job_id, resume_id) unique
-                # constraint — return the existing card instead of duplicating.
-                await session.rollback()
-                dup = await session.execute(
-                    select(Application).where(
-                        Application.job_id == job_id,
-                        Application.resume_id == resume_id,
-                    )
+                session.add(row)
+                await session.flush()
+
+                # Record MetricEvent
+                event_input = MetricEventInput(
+                    event_id=str(uuid4()),
+                    operation_key=f"create:application:{row.application_id}:lc:{lifecycle_token}",
+                    event_type=MetricEventType.ENTITY_CREATED,
+                    entity_type=MetricEntityType.APPLICATION,
+                    entity_id=row.application_id,
+                    lifecycle_id=lifecycle_token,
+                    from_state=None,
+                    to_state=status,
+                    source=source,
                 )
-                found = dup.scalars().first()
-                if found is not None:
-                    logger.debug(
-                        "Deduped concurrent application create for job=%s resume=%s",
-                        job_id,
-                        resume_id,
+                await record_metric_event(session, event_input)
+                await session.commit()
+            except IntegrityError as e:
+                await session.rollback()
+                async with self._session() as check_session:
+                    dup = await check_session.execute(
+                        select(Application).where(
+                            Application.job_id == job_id,
+                            Application.resume_id == resume_id,
+                        )
                     )
-                    return self._application_to_dict(found)
-                raise
+                    found = dup.scalars().first()
+                    if found is not None:
+                        logger.debug(
+                            "Deduped concurrent application create for job=%s resume=%s",
+                            job_id,
+                            resume_id,
+                        )
+                        return self._application_to_dict(found)
+                raise e
             return self._application_to_dict(row)
 
     async def list_applications(self, status: str | None = None) -> list[dict[str, Any]]:
@@ -576,7 +601,10 @@ class Database:
             return self._application_to_dict(row) if row else None
 
     async def update_application(
-        self, application_id: str, updates: dict[str, Any]
+        self,
+        application_id: str,
+        updates: dict[str, Any],
+        source: MetricEventSource = MetricEventSource.USER,
     ) -> dict[str, Any] | None:
         """Update an application; renumber columns when status/position change.
 
@@ -590,22 +618,65 @@ class Database:
                 return None
 
             old_status = row.status
+            old_version = row.status_version
+            lifecycle_token = row.lifecycle_token
             new_status = updates.get("status", old_status)
             target_position = updates.get("position", None)
 
-            for key in ("company", "role", "applied_at", "notes"):
-                if key in updates:
-                    setattr(row, key, updates[key])
+            status_changed = ("status" in updates) and (old_status != new_status)
 
-            moved = "status" in updates or "position" in updates
+            if status_changed:
+                from sqlalchemy import update as sqla_update
+                upd_values = {
+                    "status": new_status,
+                    "status_version": old_version + 1,
+                    "updated_at": _now()
+                }
+                for key in ("company", "role", "applied_at", "notes"):
+                    if key in updates:
+                        upd_values[key] = updates[key]
+
+                stmt = (
+                    sqla_update(Application)
+                    .where(
+                        Application.application_id == application_id,
+                        Application.status_version == old_version
+                    )
+                    .values(**upd_values)
+                )
+                res = await session.execute(stmt)
+                if res.rowcount != 1:
+                    await session.rollback()
+                    raise ApplicationStatusConflictError(
+                        f"Conflict updating status for application {application_id}. "
+                        f"Expected version {old_version}."
+                    )
+
+                event_input = MetricEventInput(
+                    event_id=str(uuid4()),
+                    operation_key=f"status_change:application:{application_id}:ver:{old_version}:from:{old_status}:to:{new_status}",
+                    event_type=MetricEventType.APPLICATION_STATUS_CHANGED,
+                    entity_type=MetricEntityType.APPLICATION,
+                    entity_id=application_id,
+                    lifecycle_id=lifecycle_token,
+                    from_state=old_status,
+                    to_state=new_status,
+                    source=source,
+                )
+                await record_metric_event(session, event_input)
+                await session.refresh(row)
+            else:
+                for key in ("company", "role", "applied_at", "notes"):
+                    if key in updates:
+                        setattr(row, key, updates[key])
+
+            moved = status_changed or "position" in updates
             if moved:
                 row.status = new_status
-                # Park it out of the way, renumber both columns, then reinsert.
                 row.position = 10_000_000
                 await session.flush()
                 if old_status != new_status:
                     await self._renumber(session, old_status)
-                # Renumber the target column excluding this row, then splice in.
                 siblings = await session.execute(
                     select(Application)
                     .where(
@@ -628,43 +699,132 @@ class Database:
             return self._application_to_dict(row)
 
     async def bulk_update_applications(
-        self, application_ids: list[str], status: str
+        self,
+        application_ids: list[str],
+        status: str,
+        source: MetricEventSource = MetricEventSource.USER,
     ) -> int:
         """Move many applications to the end of ``status``. Returns count moved."""
+        # Deduplicate application_ids while preserving order
+        unique_ids = []
+        seen = set()
+        for app_id in application_ids:
+            if app_id not in seen:
+                seen.add(app_id)
+                unique_ids.append(app_id)
+        application_ids = unique_ids
+
         moved = 0
         async with self._session() as session:
-            affected_old: set[str] = set()
+            apps_to_update = []
             for application_id in application_ids:
                 row = await session.get(Application, application_id)
-                if row is None:
-                    continue
-                affected_old.add(row.status)
-                row.status = status
-                row.position = 20_000_000 + moved  # provisional, renumbered below
-                row.updated_at = _now()
-                moved += 1
+                if row is not None:
+                    apps_to_update.append(row)
+
+            affected_old: set[str] = set()
+            from sqlalchemy import update as sqla_update
+
+            for row in apps_to_update:
+                old_status = row.status
+                old_version = row.status_version
+                lifecycle_token = row.lifecycle_token
+
+                if old_status != status:
+                    stmt = (
+                        sqla_update(Application)
+                        .where(
+                            Application.application_id == row.application_id,
+                            Application.status_version == old_version
+                        )
+                        .values(
+                            status=status,
+                            status_version=old_version + 1,
+                            updated_at=_now()
+                        )
+                    )
+                    res = await session.execute(stmt)
+                    if res.rowcount != 1:
+                        conflict_id = row.application_id
+                        await session.rollback()
+                        raise ApplicationStatusConflictError(
+                            f"Conflict updating status in bulk for application {conflict_id}."
+                        )
+
+                    event_input = MetricEventInput(
+                        event_id=str(uuid4()),
+                        operation_key=f"status_change:application:{row.application_id}:ver:{old_version}:from:{old_status}:to:{status}",
+                        event_type=MetricEventType.APPLICATION_STATUS_CHANGED,
+                        entity_type=MetricEntityType.APPLICATION,
+                        entity_id=row.application_id,
+                        lifecycle_id=lifecycle_token,
+                        from_state=old_status,
+                        to_state=status,
+                        source=source,
+                    )
+                    await record_metric_event(session, event_input)
+
+                    affected_old.add(old_status)
+                    row.status = status
+                    row.position = 20_000_000 + moved
+                    row.updated_at = _now()
+                    moved += 1
+
             await session.flush()
             for old_status in affected_old - {status}:
                 await self._renumber(session, old_status)
-            await self._renumber(session, status)
+            if moved > 0:
+                await self._renumber(session, status)
             await session.commit()
         return moved
 
-    async def delete_application(self, application_id: str) -> bool:
+    async def delete_application(
+        self,
+        application_id: str,
+        source: MetricEventSource = MetricEventSource.USER,
+    ) -> bool:
         """Delete an application; renumber its column."""
         async with self._session() as session:
             row = await session.get(Application, application_id)
             if row is None:
                 return False
             status = row.status
+            lifecycle_token = row.lifecycle_token
+
+            event_input = MetricEventInput(
+                event_id=str(uuid4()),
+                operation_key=f"delete:application:{application_id}:lc:{lifecycle_token}",
+                event_type=MetricEventType.ENTITY_DELETED,
+                entity_type=MetricEntityType.APPLICATION,
+                entity_id=application_id,
+                lifecycle_id=lifecycle_token,
+                from_state=None,
+                to_state=None,
+                source=source,
+            )
+            await record_metric_event(session, event_input)
+
             await session.delete(row)
             await session.flush()
             await self._renumber(session, status)
             await session.commit()
             return True
 
-    async def bulk_delete_applications(self, application_ids: list[str]) -> int:
+    async def bulk_delete_applications(
+        self,
+        application_ids: list[str],
+        source: MetricEventSource = MetricEventSource.USER,
+    ) -> int:
         """Delete many applications; renumber affected columns. Returns count."""
+        # Deduplicate application_ids while preserving order
+        unique_ids = []
+        seen = set()
+        for app_id in application_ids:
+            if app_id not in seen:
+                seen.add(app_id)
+                unique_ids.append(app_id)
+        application_ids = unique_ids
+
         deleted = 0
         async with self._session() as session:
             affected: set[str] = set()
@@ -672,7 +832,23 @@ class Database:
                 row = await session.get(Application, application_id)
                 if row is None:
                     continue
-                affected.add(row.status)
+                status = row.status
+                lifecycle_token = row.lifecycle_token
+
+                event_input = MetricEventInput(
+                    event_id=str(uuid4()),
+                    operation_key=f"delete:application:{application_id}:lc:{lifecycle_token}",
+                    event_type=MetricEventType.ENTITY_DELETED,
+                    entity_type=MetricEntityType.APPLICATION,
+                    entity_id=application_id,
+                    lifecycle_id=lifecycle_token,
+                    from_state=None,
+                    to_state=None,
+                    source=source,
+                )
+                await record_metric_event(session, event_input)
+
+                affected.add(status)
                 await session.delete(row)
                 deleted += 1
             await session.flush()

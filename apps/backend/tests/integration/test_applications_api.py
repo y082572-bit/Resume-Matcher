@@ -201,7 +201,19 @@ class TestRobustnessFixes:
 
     async def test_unknown_status_is_skipped_not_500(self, isolated_db):
         """A row whose status is outside the enum must not 500 the board."""
-        await isolated_db.create_application(job_id="j1", resume_id="r1", status="bogus_status")
+        from sqlalchemy import text
+        from uuid import uuid4
+        async with isolated_db._session() as session:
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO applications (application_id, job_id, resume_id, status, position, status_version, lifecycle_token, created_at, updated_at)
+                    VALUES ('bogus-app', 'j1', 'r1', 'bogus_status', 0, 0, :token, '2026-07-16', '2026-07-16')
+                    """
+                ),
+                {"token": str(uuid4())}
+            )
+            await session.commit()
         await _seed_card(isolated_db, job_id="j2", resume_id="r2", status="applied")
         async with _client() as client:
             resp = await client.get("/api/v1/applications")

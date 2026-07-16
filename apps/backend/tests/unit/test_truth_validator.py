@@ -426,7 +426,8 @@ def test_unchanged_original_claim_pass(truth_index_with_employment):
     result = audit_resume_claims(claims, truth_index_with_employment, original)
     violations = [v for v in result.violations if v.code == "TRUTH_ORIGINAL_CLAIM"]
     assert len(violations) > 0
-    assert violations[0].decision == TruthDecision.PASS
+    assert violations[0].decision == TruthDecision.REVIEW
+    assert result.requires_review
 
 
 # Test 11: New sentence without number and unverified → REVIEW, TRUTH_UNGROUNDED_TEXT
@@ -579,3 +580,185 @@ def test_validator_does_not_mutate(truth_index_with_employment):
     # Check that inputs are not modified
     assert original_index == truth_index_with_employment
     assert original_claims == claims_copy
+
+# Security regression tests
+
+def test_numeric_extraction_is_non_overlapping():
+    assert _extract_numbers("116%") == ["116%"]
+    assert _extract_numbers("10–15 doradców") == ["10–15"]
+    assert _extract_numbers("1,5 mln") == ["1,5"]
+    assert _extract_numbers("12 500 osób") == ["12 500"]
+
+
+def test_dates_are_not_business_numbers():
+    assert _extract_numbers("08.2024–07.2025") == []
+    assert _extract_numbers("2023-2024") == []
+    assert _extract_numbers("2026-07-16") == []
+
+
+def test_percentage_does_not_authorize_plain_count(truth_index_with_employment):
+    claim = ResumeClaim(
+        claim_id="reg-1", section="activities", employment_id="dz-2",
+        company="ERGO Hestia", role="Regionalny Menedżer Sprzedaży",
+        text="zarządzanie zespołem 116 osób",
+    )
+    result = audit_resume_claims([claim], truth_index_with_employment)
+    assert not result.passed
+    assert result.blocking_errors[0].code == "TRUTH_UNSUPPORTED_NUMBER"
+
+
+def test_known_number_with_changed_meaning_requires_review(truth_index_with_employment):
+    claim = ResumeClaim(
+        claim_id="reg-2", section="numeric_result", employment_id="dz-2",
+        company="ERGO Hestia", role="Regionalny Menedżer Sprzedaży",
+        text="116% wzrostu zysku przy wyniku 96%",
+    )
+    result = audit_resume_claims([claim], truth_index_with_employment)
+    assert result.passed
+    assert result.requires_review
+    assert result.warnings[0].code == "TRUTH_NUMBER_CONTEXT_REVIEW"
+
+
+def test_unknown_employment_with_number_blocks(truth_index_with_employment):
+    claim = ResumeClaim(
+        claim_id="reg-3", section="activities", employment_id="dz-999",
+        company="Nieznana firma", role="Menedżer", text="zarządzanie 999 doradcami",
+    )
+    result = audit_resume_claims([claim], truth_index_with_employment)
+    assert not result.passed
+    assert result.blocking_errors[0].code == "TRUTH_UNKNOWN_EMPLOYMENT"
+
+
+def test_company_scope_mismatch_blocks(truth_index_with_employment):
+    claim = ResumeClaim(
+        claim_id="reg-4", section="numeric_result", employment_id="dz-2",
+        company="Warta", role="Regionalny Menedżer Sprzedaży",
+        text="116% wolumenu sprzedaży przy średnim wyniku przedstawicielstwa 96%",
+    )
+    result = audit_resume_claims([claim], truth_index_with_employment)
+    assert not result.passed
+    assert result.blocking_errors[0].code == "TRUTH_EMPLOYMENT_SCOPE_MISMATCH"
+
+
+def test_original_claim_cannot_bypass_unsupported_number(truth_index_with_employment):
+    original = [ResumeClaim(
+        claim_id="orig-reg-5", section="activities", employment_id="dz-2",
+        company="ERGO Hestia", role="Regionalny Menedżer Sprzedaży",
+        text="zarządzanie 999 doradcami",
+    )]
+    result = audit_resume_claims(list(original), truth_index_with_employment, original)
+    assert not result.passed
+    assert result.blocking_errors[0].code == "TRUTH_UNSUPPORTED_NUMBER"
+
+
+def test_original_claim_does_not_bypass_duplicate_detection(truth_index_with_employment):
+    original = [ResumeClaim(
+        claim_id="orig-reg-6", section="activities", employment_id="dz-2",
+        company="ERGO Hestia", role="Regionalny Menedżer Sprzedaży",
+        text="zarządzanie sprzedażą",
+    )]
+    claims = [original[0], ResumeClaim(
+        claim_id="reg-6b", section="activities", employment_id="dz-2",
+        company="ERGO Hestia", role="Regionalny Menedżer Sprzedaży",
+        text="ZARZĄDZANIE SPRZEDAŻĄ.",
+    )]
+    result = audit_resume_claims(claims, truth_index_with_employment, original)
+    assert not result.passed
+    assert any(v.code == "TRUTH_DUPLICATE_CLAIM" for v in result.blocking_errors)
+
+
+def test_number_in_activity_fact_is_authorized_but_changed_text_reviewed(
+    truth_index_with_employment,
+):
+    claim = ResumeClaim(
+        claim_id="reg-7", section="activities", employment_id="dz-3",
+        company="Warta", role="Menedżer Dystrybucji",
+        text="poprawa wskaźnika z 36% do 96%",
+    )
+    result = audit_resume_claims([claim], truth_index_with_employment)
+    assert result.passed
+    assert result.requires_review
+    assert result.warnings[0].code == "TRUTH_NUMBER_CONTEXT_REVIEW"
+
+
+def test_blocked_budget_rule_matches_adjectival_form(truth_index_with_employment):
+    truth_index_with_employment.blocked_rules = [
+        "odpowiedzialność za budżet (bez zatwierdzenia)"
+    ]
+    claim = ResumeClaim(
+        claim_id="reg-8", section="activities", employment_id="dz-3",
+        company="Warta", role="Menedżer Dystrybucji",
+        text="ogólna odpowiedzialność budżetowa",
+    )
+    result = audit_resume_claims([claim], truth_index_with_employment)
+    assert not result.passed
+    assert result.blocking_errors[0].code == "TRUTH_BLOCKED_RULE"
+
+
+def test_exact_scoped_budget_fact_overrides_global_block(truth_index_with_employment):
+    truth_index_with_employment.blocked_rules = [
+        "odpowiedzialność za budżet (bez zatwierdzenia)"
+    ]
+    claim = ResumeClaim(
+        claim_id="reg-9", section="activities", employment_id="dz-2",
+        company="ERGO Hestia", role="Regionalny Menedżer Sprzedaży",
+        text="odpowiedzialność za budżet kontraktowy oraz ustalanie poziomów kontraktowych",
+    )
+    result = audit_resume_claims([claim], truth_index_with_employment)
+    assert result.passed
+    assert not result.requires_review
+    assert result.violations[0].code == "TRUTH_SUPPORTED_FACT"
+
+
+def test_fact_requiring_approval_returns_review(truth_index_with_employment):
+    fact = truth_index_with_employment.employment_by_id["dz-2"].allowed_facts[0]
+    fact.requires_approval = True
+    fact.status = "PRAWDA_Z_DOKUMENTU_DO_ZATWIERDZENIA"
+    truth_index_with_employment.approval_statuses = [fact.status]
+    claim = ResumeClaim(
+        claim_id="reg-10", section="numeric_result", employment_id="dz-2",
+        company="ERGO Hestia", role="Regionalny Menedżer Sprzedaży",
+        text=fact.original_text,
+    )
+    result = audit_resume_claims([claim], truth_index_with_employment)
+    assert result.passed
+    assert result.requires_review
+    assert result.warnings[0].code == "TRUTH_FACT_REQUIRES_APPROVAL"
+
+
+def test_fact_blocked_by_status_cannot_pass(truth_index_with_employment):
+    fact = truth_index_with_employment.employment_by_id["dz-2"].allowed_facts[0]
+    fact.status = "USUNIĘTE_PRZEZ_UŻYTKOWNIKA"
+    truth_index_with_employment.blocked_statuses = [fact.status]
+    claim = ResumeClaim(
+        claim_id="reg-11", section="numeric_result", employment_id="dz-2",
+        company="ERGO Hestia", role="Regionalny Menedżer Sprzedaży",
+        text=fact.original_text,
+    )
+    result = audit_resume_claims([claim], truth_index_with_employment)
+    assert not result.passed
+    assert result.blocking_errors[0].code == "TRUTH_FACT_NOT_ALLOWED"
+
+
+def test_fact_disabled_for_cv_cannot_pass(truth_index_with_employment):
+    fact = truth_index_with_employment.employment_by_id["dz-2"].allowed_facts[0]
+    fact.use_in_cv = False
+    claim = ResumeClaim(
+        claim_id="reg-12", section="numeric_result", employment_id="dz-2",
+        company="ERGO Hestia", role="Regionalny Menedżer Sprzedaży",
+        text=fact.original_text,
+    )
+    result = audit_resume_claims([claim], truth_index_with_employment)
+    assert not result.passed
+    assert result.blocking_errors[0].code == "TRUTH_FACT_NOT_ALLOWED"
+
+
+def test_every_claim_gets_explicit_decision(truth_index_with_employment):
+    claims = [ResumeClaim(
+        claim_id="reg-13", section="activities", employment_id="dz-2",
+        company="ERGO Hestia", role="Regionalny Menedżer Sprzedaży",
+        text="116% wzrostu zysku przy wyniku 96%",
+    )]
+    result = audit_resume_claims(claims, truth_index_with_employment)
+    assert len(result.violations) == len(claims)
+    assert result.violations[0].decision in set(TruthDecision)

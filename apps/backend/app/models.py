@@ -82,6 +82,7 @@ class Job(Base):
     resume_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(String, default=_utcnow_iso)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    lifecycle_token: Mapped[str] = mapped_column(String, unique=True, nullable=False, default=lambda: str(uuid4()))
 
 
 class Improvement(Base):

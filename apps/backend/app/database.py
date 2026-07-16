@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
 from app.db_engine import init_models_sync, make_async_engine, make_sync_engine
-from app.models import ApiKey, Application, Improvement, Job, Resume
+from app.models import ApiKey, Application, Improvement, Job, Resume, MetricEvent
 from app.services.project_metrics import (
     MetricEventType,
     MetricEntityType,
@@ -154,7 +154,9 @@ class Database:
         }
         meta = row.metadata_json or {}
         if isinstance(meta, dict):
-            doc.update(meta)  # flatten dynamic fields to top level
+            for k, v in meta.items():
+                if k != "lifecycle_token":
+                    doc[k] = v
         return doc
 
     @staticmethod
@@ -375,21 +377,61 @@ class Database:
 
     # -- Job operations -----------------------------------------------------
 
-    async def create_job(self, content: str, resume_id: str | None = None) -> dict[str, Any]:
+    async def create_job(
+        self,
+        content: str,
+        resume_id: str | None = None,
+        source: MetricEventSource = MetricEventSource.USER,
+    ) -> dict[str, Any]:
         """Create a new job description entry."""
         job_id = str(uuid4())
         now = _now()
+        lifecycle_token = str(uuid4())
         async with self._session() as session:
-            session.add(
-                Job(job_id=job_id, content=content, resume_id=resume_id, created_at=now, metadata_json={})
-            )
-            await session.commit()
-        return {
-            "job_id": job_id,
-            "content": content,
-            "resume_id": resume_id,
-            "created_at": now,
-        }
+            try:
+                row = Job(
+                    job_id=job_id,
+                    content=content,
+                    resume_id=resume_id,
+                    created_at=now,
+                    metadata_json={},
+                    lifecycle_token=lifecycle_token
+                )
+                session.add(row)
+                await session.flush()
+
+                # Record MetricEvent
+                event_input = MetricEventInput(
+                    event_id=str(uuid4()),
+                    operation_key=f"create:job:{job_id}:lc:{lifecycle_token}",
+                    event_type=MetricEventType.ENTITY_CREATED,
+                    entity_type=MetricEntityType.JOB,
+                    entity_id=job_id,
+                    lifecycle_id=lifecycle_token,
+                    from_state=None,
+                    to_state=None,
+                    source=source,
+                )
+                await record_metric_event(session, event_input)
+                await session.commit()
+            except IntegrityError as e:
+                await session.rollback()
+                orig_msg = str(e.orig) if e.orig else ""
+                if "UNIQUE constraint failed: jobs.job_id" in orig_msg:
+                    async with self._session() as check_session:
+                        dup = await check_session.execute(
+                            select(Job).where(Job.job_id == job_id)
+                        )
+                        found = dup.scalars().first()
+                        if found is not None:
+                            return self._job_to_dict(found)
+                raise
+            return {
+                "job_id": job_id,
+                "content": content,
+                "resume_id": resume_id,
+                "created_at": now,
+            }
 
     async def get_job(self, job_id: str) -> dict[str, Any] | None:
         """Get job by ID (dynamic fields flattened to top level)."""
@@ -413,6 +455,8 @@ class Database:
                 return None
             meta = dict(row.metadata_json or {})
             for key, value in updates.items():
+                if key == "lifecycle_token":
+                    continue
                 if key in _JOB_CORE_FIELDS:
                     setattr(row, key, value)
                 else:
@@ -422,12 +466,31 @@ class Database:
             await session.commit()
             return self._job_to_dict(row)
 
-    async def delete_job(self, job_id: str) -> bool:
+    async def delete_job(
+        self,
+        job_id: str,
+        source: MetricEventSource = MetricEventSource.USER,
+    ) -> bool:
         """Delete a job by ID (used to clean up an orphaned manual-add job)."""
         async with self._session() as session:
             row = await session.get(Job, job_id)
             if row is None:
                 return False
+            lifecycle_token = row.lifecycle_token
+
+            event_input = MetricEventInput(
+                event_id=str(uuid4()),
+                operation_key=f"delete:job:{job_id}:lc:{lifecycle_token}",
+                event_type=MetricEventType.ENTITY_DELETED,
+                entity_type=MetricEntityType.JOB,
+                entity_id=job_id,
+                lifecycle_id=lifecycle_token,
+                from_state=None,
+                to_state=None,
+                source=source,
+            )
+            await record_metric_event(session, event_input)
+
             await session.delete(row)
             await session.commit()
             return True
@@ -455,6 +518,35 @@ class Database:
                     created_at=now,
                 )
             )
+
+            # Get Job lifecycle_token if job exists
+            job_row = await session.get(Job, job_id)
+            if job_row is not None:
+                lifecycle_token = job_row.lifecycle_token
+
+                # Check if JOB_ANALYZED event already exists for this lifecycle
+                existing_evt = await session.execute(
+                    select(MetricEvent).where(
+                        MetricEvent.event_type == MetricEventType.JOB_ANALYZED.value,
+                        MetricEvent.entity_type == MetricEntityType.JOB.value,
+                        MetricEvent.entity_id == job_id,
+                        MetricEvent.lifecycle_id == lifecycle_token
+                    )
+                )
+                if existing_evt.scalars().first() is None:
+                    event_input = MetricEventInput(
+                        event_id=str(uuid4()),
+                        operation_key=f"analyze:job:{job_id}:lc:{lifecycle_token}",
+                        event_type=MetricEventType.JOB_ANALYZED,
+                        entity_type=MetricEntityType.JOB,
+                        entity_id=job_id,
+                        lifecycle_id=lifecycle_token,
+                        from_state=None,
+                        to_state=None,
+                        source=MetricEventSource.SYSTEM,
+                    )
+                    await record_metric_event(session, event_input)
+
             await session.commit()
         return {
             "request_id": request_id,

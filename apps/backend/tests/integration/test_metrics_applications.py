@@ -760,9 +760,9 @@ async def test_report_current_metrics_counted_from_applications_table(initialize
     assert get_measure(MetricType.STATUS_CHANGES).value is None
     assert get_measure(MetricType.STATUS_CHANGES).availability == MetricAvailability.UNSUPPORTED
 
-    # 42. Job & Resume current: value=None, availability=UNSUPPORTED
-    assert get_measure(MetricType.JOB_OFFERS_SAVED).value is None
-    assert get_measure(MetricType.JOB_OFFERS_SAVED).availability == MetricAvailability.UNSUPPORTED
+    # 42. Job & Resume current: Job is now AVAILABLE (value 0), Resume is UNSUPPORTED
+    assert get_measure(MetricType.JOB_OFFERS_SAVED).value == 0
+    assert get_measure(MetricType.JOB_OFFERS_SAVED).availability == MetricAvailability.AVAILABLE
     assert get_measure(MetricType.RESUMES_GENERATED).value is None
     assert get_measure(MetricType.RESUMES_GENERATED).availability == MetricAvailability.UNSUPPORTED
 

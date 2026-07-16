@@ -597,7 +597,8 @@ async def build_metrics_report(session: AsyncSession) -> MetricSummaryReport:
         historical_complete=historical_complete,
     )
 
-    from app.models import Application
+    from app.models import Application, Job
+    from sqlalchemy import func
     res_apps = await session.execute(select(Application.status))
     app_statuses = res_apps.scalars().all()
 
@@ -608,6 +609,22 @@ async def build_metrics_report(session: AsyncSession) -> MetricSummaryReport:
     rejected_apps = sum(1 for s in app_statuses if s == "rejected")
     accepted_apps = sum(1 for s in app_statuses if s == "accepted")
 
+    # job_offers_saved current
+    res_jobs = await session.execute(select(func.count()).select_from(Job))
+    job_offers_saved_current = res_jobs.scalar() or 0
+
+    # job_offers_analyzed current (distinct lifecycle_tokens of existing jobs having a JOB_ANALYZED metric event in their current lifecycle)
+    res_analyzed = await session.execute(
+        select(func.count(func.distinct(Job.lifecycle_token))).join(
+            MetricEvent,
+            (MetricEvent.event_type == MetricEventType.JOB_ANALYZED.value) &
+            (MetricEvent.entity_type == MetricEntityType.JOB.value) &
+            (MetricEvent.entity_id == Job.job_id) &
+            (MetricEvent.lifecycle_id == Job.lifecycle_token)
+        )
+    )
+    job_offers_analyzed_current = res_analyzed.scalar() or 0
+
     app_current_map = {
         MetricType.APPLICATIONS_CREATED: total_apps,
         MetricType.APPLICATIONS_SUBMITTED: applied_apps,
@@ -615,6 +632,8 @@ async def build_metrics_report(session: AsyncSession) -> MetricSummaryReport:
         MetricType.INTERVIEWS: interview_apps,
         MetricType.REJECTIONS: rejected_apps,
         MetricType.APPLICATIONS_ACCEPTED: accepted_apps,
+        MetricType.JOB_OFFERS_SAVED: job_offers_saved_current,
+        MetricType.JOB_OFFERS_ANALYZED: job_offers_analyzed_current,
     }
 
     new_metrics = []

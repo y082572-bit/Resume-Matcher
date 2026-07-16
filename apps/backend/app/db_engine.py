@@ -119,6 +119,53 @@ def init_models_sync(engine: Engine) -> None:
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_applications_lifecycle_token ON applications(lifecycle_token)"
             )
 
+        # Idempotent migration for jobs table
+        job_cols = conn.exec_driver_sql("PRAGMA table_info(jobs)").mappings().all()
+        if job_cols:
+            existing_job_cols = {column["name"] for column in job_cols}
+            if "lifecycle_token" not in existing_job_cols:
+                conn.exec_driver_sql("ALTER TABLE jobs ADD COLUMN lifecycle_token TEXT")
+
+            # Backfill/repair NULL, empty, or duplicate lifecycle_tokens on jobs
+            rows = conn.exec_driver_sql("SELECT job_id, lifecycle_token FROM jobs").mappings().all()
+            token_counts = {}
+            for r in rows:
+                tok = r["lifecycle_token"]
+                if tok is not None and len(tok.strip()) > 0:
+                    token_counts[tok] = token_counts.get(tok, 0) + 1
+
+            processed_tokens = set()
+            from uuid import uuid4
+            for r in rows:
+                j_id = r["job_id"]
+                tok = r["lifecycle_token"]
+
+                needs_backfill = False
+                if tok is None or len(tok.strip()) == 0:
+                    needs_backfill = True
+                elif token_counts.get(tok, 0) > 1:
+                    if tok in processed_tokens:
+                        needs_backfill = True
+                    else:
+                        processed_tokens.add(tok)
+                else:
+                    processed_tokens.add(tok)
+
+                if needs_backfill:
+                    new_token = str(uuid4())
+                    while new_token in processed_tokens:
+                        new_token = str(uuid4())
+                    conn.exec_driver_sql(
+                        "UPDATE jobs SET lifecycle_token = ? WHERE job_id = ?",
+                        (new_token, j_id)
+                    )
+                    processed_tokens.add(new_token)
+
+            # Always ensure the unique index exists
+            conn.exec_driver_sql(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_jobs_lifecycle_token ON jobs(lifecycle_token)"
+            )
+
         # Create triggers for applications lifecycle token checks
         conn.exec_driver_sql(
             """
@@ -146,6 +193,42 @@ def init_models_sync(engine: Engine) -> None:
             """
             CREATE TRIGGER IF NOT EXISTS applications_lifecycle_immutable
             BEFORE UPDATE ON applications
+            FOR EACH ROW
+            BEGIN
+                SELECT RAISE(FAIL, 'lifecycle_token is immutable')
+                WHERE OLD.lifecycle_token IS NOT NULL AND length(trim(OLD.lifecycle_token)) > 0
+                  AND NEW.lifecycle_token != OLD.lifecycle_token;
+            END;
+            """
+        )
+
+        # Create triggers for jobs lifecycle token checks
+        conn.exec_driver_sql(
+            """
+            CREATE TRIGGER IF NOT EXISTS jobs_lifecycle_required_insert
+            BEFORE INSERT ON jobs
+            FOR EACH ROW
+            BEGIN
+                SELECT RAISE(FAIL, 'lifecycle_token cannot be NULL or empty')
+                WHERE NEW.lifecycle_token IS NULL OR length(trim(NEW.lifecycle_token)) = 0;
+            END;
+            """
+        )
+        conn.exec_driver_sql(
+            """
+            CREATE TRIGGER IF NOT EXISTS jobs_lifecycle_required_update
+            BEFORE UPDATE ON jobs
+            FOR EACH ROW
+            BEGIN
+                SELECT RAISE(FAIL, 'lifecycle_token cannot be NULL or empty')
+                WHERE NEW.lifecycle_token IS NULL OR length(trim(NEW.lifecycle_token)) = 0;
+            END;
+            """
+        )
+        conn.exec_driver_sql(
+            """
+            CREATE TRIGGER IF NOT EXISTS jobs_lifecycle_immutable
+            BEFORE UPDATE ON jobs
             FOR EACH ROW
             BEGIN
                 SELECT RAISE(FAIL, 'lifecycle_token is immutable')

@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.database import db
 from app.services.improver import extract_job_keywords
-from app.services.project_metrics import ApplicationStatusConflictError
+from app.services.project_metrics import ApplicationStatusConflictError, MetricEventSource
 from app.schemas import (
     APPLICATION_STATUS_ORDER,
     ApplicationActionResponse,
@@ -83,7 +83,7 @@ async def create_application(request: ManualApplicationCreate) -> ApplicationRes
     except Exception as e:
         logger.error("Failed to create application: %s", e)
         try:
-            await db.delete_job(job["job_id"])
+            await db.delete_job(job["job_id"], source=MetricEventSource.SYSTEM)
         except Exception as cleanup_error:
             logger.warning("Failed to clean up orphan job %s: %s", job["job_id"], cleanup_error)
         raise HTTPException(status_code=500, detail="Failed to create application. Please try again.")

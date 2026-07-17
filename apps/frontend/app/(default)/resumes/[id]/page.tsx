@@ -23,6 +23,7 @@ import {
   Sparkles,
   Pencil,
   MessagesSquare,
+  Compass,
 } from 'lucide-react';
 import { EnrichmentModal } from '@/components/enrichment/enrichment-modal';
 import { useTranslations } from '@/lib/i18n';
@@ -135,6 +136,10 @@ export default function ResumeViewerPage() {
 
   const handleInterviewPrep = () => {
     router.push(`/builder?id=${resumeId}&tab=interview-prep`);
+  };
+
+  const handleCareerPositioning = () => {
+    router.push(`/resumes/${resumeId}/positioning`);
   };
 
   const handleTitleSave = async () => {
@@ -379,6 +384,12 @@ export default function ResumeViewerPage() {
               <Button variant="outline" onClick={handleInterviewPrep}>
                 <MessagesSquare className="w-4 h-4" />
                 {t('interviewPrep.title')}
+              </Button>
+            )}
+            {isTailoredResume && (
+              <Button variant="outline" onClick={handleCareerPositioning} className="gap-2">
+                <Compass className="w-4 h-4" />
+                {t('careerPositioning.positioningNavLabel')}
               </Button>
             )}
             <Button variant="success" onClick={handleDownload} disabled={isDownloading}>

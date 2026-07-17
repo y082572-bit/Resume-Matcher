@@ -65,3 +65,6 @@ export {
   type PromptConfig,
   type PromptConfigUpdate,
 } from './config';
+
+// Career positioning operations
+export { fetchCareerPositioning, fetchResumeJobContext } from './career-positioning';

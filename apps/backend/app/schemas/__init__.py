@@ -71,6 +71,16 @@ from app.schemas.applications import (
     BulkStatusUpdate,
     ManualApplicationCreate,
 )
+from app.schemas.career_positioning import (
+    CareerPositioningResponse,
+    PositioningDetailsSchema,
+    RisksSchema,
+    CompetencyItemSchema,
+    CompetenciesSchema,
+    StrategySchema,
+    EvidenceSchema,
+    LimitationsSchema,
+)
 
 __all__ = [
     "PersonalInfo",
@@ -140,4 +150,12 @@ __all__ = [
     "BulkStatusUpdate",
     "BulkDelete",
     "ApplicationActionResponse",
+    "CareerPositioningResponse",
+    "PositioningDetailsSchema",
+    "RisksSchema",
+    "CompetencyItemSchema",
+    "CompetenciesSchema",
+    "StrategySchema",
+    "EvidenceSchema",
+    "LimitationsSchema",
 ]

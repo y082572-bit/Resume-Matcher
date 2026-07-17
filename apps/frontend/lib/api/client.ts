@@ -71,19 +71,53 @@ export async function apiFetch(
   // must agree or the shortest aborts first).
   const timeout = timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout);
+
+  let isTimeout = false;
+  const timer = setTimeout(() => {
+    isTimeout = true;
+    controller.abort();
+  }, timeout);
+
+  const externalSignal = options?.signal;
+
+  if (externalSignal?.aborted) {
+    clearTimeout(timer);
+    let abortError: Error;
+    try {
+      abortError = new DOMException('The user aborted a request.', 'AbortError');
+    } catch {
+      abortError = new Error('The user aborted a request.');
+      abortError.name = 'AbortError';
+    }
+    throw abortError;
+  }
+
+  const onExternalAbort = () => {
+    controller.abort(externalSignal?.reason);
+  };
+
+  if (externalSignal) {
+    externalSignal.addEventListener('abort', onExternalAbort);
+  }
 
   try {
     return await fetch(url, { ...options, signal: controller.signal });
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
-      throw new Error(
-        'Request timed out. If you are running a local LLM, increase NEXT_PUBLIC_REQUEST_TIMEOUT_MS (and the backend REQUEST_TIMEOUT_SECONDS to match); otherwise try a shorter job description or check your connection.'
-      );
+      if (isTimeout || !externalSignal) {
+        throw new Error(
+          'Request timed out. If you are running a local LLM, increase NEXT_PUBLIC_REQUEST_TIMEOUT_MS (and the backend REQUEST_TIMEOUT_SECONDS to match); otherwise try a shorter job description or check your connection.'
+        );
+      } else {
+        throw error;
+      }
     }
     throw error;
   } finally {
     clearTimeout(timer);
+    if (externalSignal) {
+      externalSignal.removeEventListener('abort', onExternalAbort);
+    }
   }
 }
 

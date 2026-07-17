@@ -27,6 +27,7 @@ from app.routers import (
     metrics_router,
     resume_wizard_router,
     resumes_router,
+    career_positioning_router,
 )
 
 
@@ -99,6 +100,7 @@ app.include_router(enrichment_router, prefix="/api/v1")
 app.include_router(applications_router, prefix="/api/v1")
 app.include_router(resume_wizard_router, prefix="/api/v1")
 app.include_router(metrics_router, prefix="/api/v1")
+app.include_router(career_positioning_router, prefix="/api/v1")
 
 
 @app.get("/")

@@ -209,6 +209,7 @@ async def isolated_db(tmp_path, monkeypatch):
         "applications",
         "resume_wizard",
         "metrics",
+        "career_positioning",
     ):
         try:
             module = importlib.import_module(f"app.routers.{router_name}")

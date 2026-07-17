@@ -8,6 +8,7 @@ from app.routers.jobs import router as jobs_router
 from app.routers.resume_wizard import router as resume_wizard_router
 from app.routers.resumes import router as resumes_router
 from app.routers.metrics import router as metrics_router
+from app.routers.career_positioning import router as career_positioning_router
 
 __all__ = [
     "resumes_router",
@@ -18,4 +19,5 @@ __all__ = [
     "applications_router",
     "resume_wizard_router",
     "metrics_router",
+    "career_positioning_router",
 ]

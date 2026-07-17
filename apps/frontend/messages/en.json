@@ -45,7 +45,8 @@
     "settings": "Settings",
     "backToDashboard": "Back to Dashboard",
     "goToSettings": "Go to Settings",
-    "applicationTracker": "Application Tracker"
+    "applicationTracker": "Application Tracker",
+    "metrics": "Metrics"
   },
   "dashboard": {
     "title": "Dashboard",

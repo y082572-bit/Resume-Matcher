@@ -4,6 +4,7 @@ import React from 'react';
 import Image from 'next/image';
 import Link from 'next/link';
 import LayoutGrid from 'lucide-react/dist/esm/icons/layout-grid';
+import BarChart3 from 'lucide-react/dist/esm/icons/bar-chart-3';
 import { useTranslations } from '@/lib/i18n';
 
 export const SwissGrid = ({ children }: { children: React.ReactNode }) => {
@@ -63,6 +64,13 @@ export const SwissGrid = ({ children }: { children: React.ReactNode }) => {
             >
               <LayoutGrid className="w-4 h-4" />
               {t('nav.applicationTracker')}
+            </Link>
+            <Link
+              href="/metrics"
+              className="inline-flex items-center justify-center gap-2 bg-background text-black border border-black px-6 py-2 uppercase font-bold tracking-wide shadow-sw-sm hover:translate-y-[1px] hover:translate-x-[1px] hover:shadow-none transition-all min-w-[140px] text-center"
+            >
+              <BarChart3 className="w-4 h-4" />
+              {t('nav.metrics')}
             </Link>
             <Link
               href="/settings"

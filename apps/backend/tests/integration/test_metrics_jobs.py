@@ -24,9 +24,8 @@ from app.main import app as fastapi_app
 
 @pytest.fixture
 async def initialized_db(isolated_db):
-    async with isolated_db._session() as session:
-        await initialize_metric_tracking_state(session, historical_complete=True)
-        await session.commit()
+    from app.services.project_metrics_bootstrap import bootstrap_metrics
+    await bootstrap_metrics(isolated_db)
     return isolated_db
 
 

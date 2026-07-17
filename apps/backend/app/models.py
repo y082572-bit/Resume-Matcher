@@ -197,3 +197,24 @@ class MetricTrackingState(Base):
     __table_args__ = (
         CheckConstraint("id = 1", name="ck_metric_tracking_state_singleton"),
     )
+
+
+class MetricBootstrapState(Base):
+    """Zapisuje stan bootstrapowania metryk v1."""
+
+    __tablename__ = "metric_bootstrap_state"
+
+    bootstrap_key: Mapped[str] = mapped_column(String, primary_key=True)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    baseline_at: Mapped[str] = mapped_column(String, nullable=False)
+    completed_at: Mapped[str] = mapped_column(String, nullable=False)
+    history_completeness: Mapped[str] = mapped_column(String, nullable=False)
+    baseline_event_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    database_was_empty: Mapped[bool] = mapped_column(Boolean, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "history_completeness IN ('COMPLETE', 'PARTIAL_BASELINE')",
+            name="ck_metric_bootstrap_state_completeness"
+        ),
+    )

@@ -24,6 +24,7 @@ from app.routers import (
     enrichment_router,
     health_router,
     jobs_router,
+    metrics_router,
     resume_wizard_router,
     resumes_router,
 )
@@ -55,6 +56,9 @@ async def lifespan(app: FastAPI):
     from app.config import migrate_legacy_keys
 
     migrate_legacy_keys()
+    # Bootstrap project metrics collector v1
+    from app.services.project_metrics_bootstrap import bootstrap_metrics
+    await bootstrap_metrics(db)
     # PDF renderer uses lazy initialization - will initialize on first use
     # await init_pdf_renderer()
     yield
@@ -94,6 +98,7 @@ app.include_router(jobs_router, prefix="/api/v1")
 app.include_router(enrichment_router, prefix="/api/v1")
 app.include_router(applications_router, prefix="/api/v1")
 app.include_router(resume_wizard_router, prefix="/api/v1")
+app.include_router(metrics_router, prefix="/api/v1")
 
 
 @app.get("/")

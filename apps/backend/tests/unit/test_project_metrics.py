@@ -724,3 +724,173 @@ def test_aggregator_multiple_entity_types():
     assert jobs.lifetime.value == 1
     assert apps.lifetime.value == 1
     assert resumes.lifetime.value == 1
+
+
+def test_validation_bootstrap_entity_created_application_to_state_none():
+    # BOOTSTRAP + ENTITY_CREATED + APPLICATION + to_state=None przechodzi
+    inp = MetricEventInput(
+        event_id="evt-1",
+        operation_key="op-1",
+        event_type=MetricEventType.ENTITY_CREATED,
+        entity_type=MetricEntityType.APPLICATION,
+        entity_id="app-1",
+        lifecycle_id="lc-1",
+        to_state=None,
+        source=MetricEventSource.BOOTSTRAP,
+    )
+    assert inp.to_state is None
+
+
+def test_validation_bootstrap_entity_created_application_to_state_val_rejected():
+    # BOOTSTRAP + ENTITY_CREATED + APPLICATION + to_state="interview" jest odrzucane
+    with pytest.raises(ValueError, match="with BOOTSTRAP source requires to_state to be None"):
+        MetricEventInput(
+            event_id="evt-1",
+            operation_key="op-1",
+            event_type=MetricEventType.ENTITY_CREATED,
+            entity_type=MetricEntityType.APPLICATION,
+            entity_id="app-1",
+            lifecycle_id="lc-1",
+            to_state="interview",
+            source=MetricEventSource.BOOTSTRAP,
+        )
+
+
+def test_validation_user_entity_created_application_to_state_none_rejected():
+    # USER + to_state=None jest odrzucane
+    with pytest.raises(ValueError, match="requires a valid to_state"):
+        MetricEventInput(
+            event_id="evt-1",
+            operation_key="op-1",
+            event_type=MetricEventType.ENTITY_CREATED,
+            entity_type=MetricEntityType.APPLICATION,
+            entity_id="app-1",
+            lifecycle_id="lc-1",
+            to_state=None,
+            source=MetricEventSource.USER,
+        )
+
+
+def test_validation_system_entity_created_application_to_state_none_rejected():
+    # SYSTEM + to_state=None jest odrzucane
+    with pytest.raises(ValueError, match="requires a valid to_state"):
+        MetricEventInput(
+            event_id="evt-1",
+            operation_key="op-1",
+            event_type=MetricEventType.ENTITY_CREATED,
+            entity_type=MetricEntityType.APPLICATION,
+            entity_id="app-1",
+            lifecycle_id="lc-1",
+            to_state=None,
+            source=MetricEventSource.SYSTEM,
+        )
+
+
+def test_validation_user_and_system_entity_created_application_valid_status_pass():
+    # USER i SYSTEM z poprawnym statusem nadal przechodzą
+    inp1 = MetricEventInput(
+        event_id="evt-1",
+        operation_key="op-1",
+        event_type=MetricEventType.ENTITY_CREATED,
+        entity_type=MetricEntityType.APPLICATION,
+        entity_id="app-1",
+        lifecycle_id="lc-1",
+        to_state="applied",
+        source=MetricEventSource.USER,
+    )
+    assert inp1.to_state == "applied"
+
+    inp2 = MetricEventInput(
+        event_id="evt-2",
+        operation_key="op-2",
+        event_type=MetricEventType.ENTITY_CREATED,
+        entity_type=MetricEntityType.APPLICATION,
+        entity_id="app-1",
+        lifecycle_id="lc-1",
+        to_state="interview",
+        source=MetricEventSource.SYSTEM,
+    )
+    assert inp2.to_state == "interview"
+
+
+def test_pure_aggregator_create_interview_and_baseline_interview():
+    # sequence_id=1, ENTITY_CREATED, APPLICATION, to_state="interview", source=USER
+    e1 = make_event(
+        seq_id=1,
+        event_id="evt-created",
+        operation_key="op-created",
+        event_type=MetricEventType.ENTITY_CREATED,
+        entity_type=MetricEntityType.APPLICATION,
+        entity_id="app-1",
+        lifecycle_id="lc-1",
+        to_state="interview",
+        source=MetricEventSource.USER,
+    )
+    # sequence_id=2, BASELINE, APPLICATION, to_state="interview", source=BOOTSTRAP
+    e2 = make_event(
+        seq_id=2,
+        event_id="evt-baseline",
+        operation_key="op-baseline",
+        event_type=MetricEventType.BASELINE,
+        entity_type=MetricEntityType.APPLICATION,
+        entity_id="app-1",
+        lifecycle_id="lc-1",
+        to_state="interview",
+        source=MetricEventSource.BOOTSTRAP,
+    )
+
+    report = aggregate_events([e1, e2], "2026", "2026", True)
+
+    m_interviews = next(m for m in report.metrics if m.metric_name == MetricType.INTERVIEWS)
+    m_responses = next(m for m in report.metrics if m.metric_name == MetricType.EMPLOYER_RESPONSES)
+    m_status_changes = next(m for m in report.metrics if m.metric_name == MetricType.STATUS_CHANGES)
+    m_created = next(m for m in report.metrics if m.metric_name == MetricType.APPLICATIONS_CREATED)
+
+    assert m_created.lifetime.value == 1
+    assert m_interviews.lifetime.value == 1
+    assert m_interviews.peak.value == 1
+    assert m_responses.lifetime.value == 1
+    assert m_responses.peak.value == 1
+    assert m_status_changes.lifetime.value == 0
+
+
+def test_pure_aggregator_create_applied_and_baseline_interview():
+    # sequence_id=1, ENTITY_CREATED, APPLICATION, to_state="applied", source=USER
+    e1 = make_event(
+        seq_id=1,
+        event_id="evt-created",
+        operation_key="op-created",
+        event_type=MetricEventType.ENTITY_CREATED,
+        entity_type=MetricEntityType.APPLICATION,
+        entity_id="app-1",
+        lifecycle_id="lc-1",
+        to_state="applied",
+        source=MetricEventSource.USER,
+    )
+    # sequence_id=2, BASELINE, APPLICATION, to_state="interview", source=BOOTSTRAP
+    e2 = make_event(
+        seq_id=2,
+        event_id="evt-baseline",
+        operation_key="op-baseline",
+        event_type=MetricEventType.BASELINE,
+        entity_type=MetricEntityType.APPLICATION,
+        entity_id="app-1",
+        lifecycle_id="lc-1",
+        to_state="interview",
+        source=MetricEventSource.BOOTSTRAP,
+    )
+
+    report = aggregate_events([e1, e2], "2026", "2026", True)
+
+    m_submitted = next(m for m in report.metrics if m.metric_name == MetricType.APPLICATIONS_SUBMITTED)
+    m_interviews = next(m for m in report.metrics if m.metric_name == MetricType.INTERVIEWS)
+    m_responses = next(m for m in report.metrics if m.metric_name == MetricType.EMPLOYER_RESPONSES)
+    m_status_changes = next(m for m in report.metrics if m.metric_name == MetricType.STATUS_CHANGES)
+
+    assert m_submitted.lifetime.value == 1
+    assert m_submitted.peak.value == 1
+    assert m_interviews.lifetime.value == 1
+    assert m_interviews.peak.value == 1
+    assert m_responses.lifetime.value == 1
+    assert m_responses.peak.value == 1
+    assert m_status_changes.lifetime.value == 0

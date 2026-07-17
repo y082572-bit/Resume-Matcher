@@ -27,9 +27,13 @@ from app.main import app as fastapi_app
 
 @pytest.fixture
 async def initialized_db(isolated_db):
+    from app.services.project_metrics_bootstrap import bootstrap_metrics
+    # 1. Run bootstrap when DB is empty to mark it complete without seeding baseline events
+    await bootstrap_metrics(isolated_db)
+
+    # 2. Add the master resume via ORM
+    from app.database import _now
     async with isolated_db._session() as session:
-        await initialize_metric_tracking_state(session, historical_complete=True)
-        from app.database import _now
         master_resume = Resume(
             resume_id="master-1",
             content="Master content",

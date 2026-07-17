@@ -339,3 +339,23 @@ def init_models_sync(engine: Engine) -> None:
             END;
             """
         )
+
+        # Create triggers for metric_bootstrap_state immutability idempotent-ly
+        conn.exec_driver_sql(
+            """
+            CREATE TRIGGER IF NOT EXISTS metric_bootstrap_state_no_update
+            BEFORE UPDATE ON metric_bootstrap_state
+            BEGIN
+                SELECT RAISE(FAIL, 'Updates on metric_bootstrap_state are prohibited');
+            END;
+            """
+        )
+        conn.exec_driver_sql(
+            """
+            CREATE TRIGGER IF NOT EXISTS metric_bootstrap_state_no_delete
+            BEFORE DELETE ON metric_bootstrap_state
+            BEGIN
+                SELECT RAISE(FAIL, 'Deletes on metric_bootstrap_state are prohibited');
+            END;
+            """
+        )

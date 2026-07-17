@@ -39,7 +39,6 @@ class MetricEventSource(str, Enum):
 
 class MetricAvailability(str, Enum):
     AVAILABLE = "AVAILABLE"
-    INCOMPLETE_HISTORY = "INCOMPLETE_HISTORY"
     UNSUPPORTED = "UNSUPPORTED"
 
 
@@ -186,8 +185,12 @@ class MetricEventInput:
             if self.entity_type == MetricEntityType.APPLICATION:
                 if self.from_state is not None:
                     raise ValueError("ENTITY_CREATED for APPLICATION requires from_state to be None")
-                if self.to_state is None:
-                    raise ValueError("ENTITY_CREATED for APPLICATION requires a valid to_state")
+                if self.source in (MetricEventSource.USER, MetricEventSource.SYSTEM):
+                    if self.to_state is None:
+                        raise ValueError("ENTITY_CREATED for APPLICATION requires a valid to_state")
+                if self.source == MetricEventSource.BOOTSTRAP:
+                    if self.to_state is not None:
+                        raise ValueError("ENTITY_CREATED for APPLICATION with BOOTSTRAP source requires to_state to be None")
             else:
                 if self.from_state is not None or self.to_state is not None:
                     raise ValueError("ENTITY_CREATED for JOB or RESUME cannot have from_state or to_state")
@@ -221,12 +224,23 @@ class MetricCapabilities:
 
 
 @dataclass(frozen=True)
+class MetricHistoryInfo:
+    bootstrap_version: int
+    baseline_at: str
+    complete_since: str
+    completeness: str
+    baseline_event_count: int
+
+
+@dataclass(frozen=True)
 class MetricSummaryReport:
     metrics: Tuple[MetricValue, ...]
     tracking_started_at: str
     generated_at: str
     historical_complete: bool
     capabilities: MetricCapabilities
+    history: Optional[MetricHistoryInfo] = None
+
 
 
 @dataclass(frozen=True)
@@ -438,31 +452,45 @@ def aggregate_events(
                     applications_created_current += 1
                     applications_created_peak = max(applications_created_peak, applications_created_current)
 
-                    to_state = event.to_state
-                    if to_state:
-                        app_active_status[lc_id] = to_state
+                old_state = app_active_status.get(lc_id)
+                if old_state:
+                    if old_state == "applied":
+                        submitted_current = max(0, submitted_current - 1)
+                    elif old_state == "interview":
+                        interview_current = max(0, interview_current - 1)
+                    elif old_state == "accepted":
+                        accepted_current = max(0, accepted_current - 1)
+                    elif old_state == "rejected":
+                        rejected_current = max(0, rejected_current - 1)
 
-                        if to_state == "applied":
-                            submitted_current += 1
-                            submitted_peak = max(submitted_peak, submitted_current)
-                            submitted_lifecycles.add(lc_id)
-                        elif to_state == "interview":
-                            interview_current += 1
-                            interview_peak = max(interview_peak, interview_current)
-                            interview_lifecycles.add(lc_id)
-                        elif to_state == "accepted":
-                            accepted_current += 1
-                            accepted_peak = max(accepted_peak, accepted_current)
-                            accepted_lifecycles.add(lc_id)
-                        elif to_state == "rejected":
-                            rejected_current += 1
-                            rejected_peak = max(rejected_peak, rejected_current)
-                            rejected_lifecycles.add(lc_id)
+                    if old_state in ("response", "interview", "accepted", "rejected"):
+                        response_current = max(0, response_current - 1)
 
-                        if to_state in ("response", "interview", "accepted", "rejected"):
-                            response_current += 1
-                            response_peak = max(response_peak, response_current)
-                            response_lifecycles.add(lc_id)
+                to_state = event.to_state
+                if to_state:
+                    app_active_status[lc_id] = to_state
+
+                    if to_state == "applied":
+                        submitted_current += 1
+                        submitted_peak = max(submitted_peak, submitted_current)
+                        submitted_lifecycles.add(lc_id)
+                    elif to_state == "interview":
+                        interview_current += 1
+                        interview_peak = max(interview_peak, interview_current)
+                        interview_lifecycles.add(lc_id)
+                    elif to_state == "accepted":
+                        accepted_current += 1
+                        accepted_peak = max(accepted_peak, accepted_current)
+                        accepted_lifecycles.add(lc_id)
+                    elif to_state == "rejected":
+                        rejected_current += 1
+                        rejected_peak = max(rejected_peak, rejected_current)
+                        rejected_lifecycles.add(lc_id)
+
+                    if to_state in ("response", "interview", "accepted", "rejected"):
+                        response_current += 1
+                        response_peak = max(response_peak, response_current)
+                        response_lifecycles.add(lc_id)
 
             elif e_type == "APPLICATION_STATUS_CHANGED":
                 if lc_id not in active_application_lifecycles:
@@ -533,15 +561,11 @@ def aggregate_events(
                     if old_state in ("response", "interview", "accepted", "rejected"):
                         response_current = max(0, response_current - 1)
 
+    availability_val = MetricAvailability.AVAILABLE
     has_bootstrap_or_baseline = any(
         e.source == "BOOTSTRAP" or e.event_type == "BASELINE" for e in events
     )
     effective_historical_complete = historical_complete and not has_bootstrap_or_baseline
-    availability_val = (
-        MetricAvailability.AVAILABLE
-        if effective_historical_complete
-        else MetricAvailability.INCOMPLETE_HISTORY
-    )
 
     def make_metric(metric_name: MetricType, lifetime_val: int, peak_val: Optional[int]) -> MetricValue:
         return MetricValue(
@@ -584,6 +608,23 @@ async def build_metrics_report(session: AsyncSession) -> MetricSummaryReport:
     if state is None:
         raise MetricsTrackingNotInitializedError("Metric tracking has not been initialized.")
 
+    from app.models import MetricBootstrapState
+    bootstrap_result = await session.execute(
+        select(MetricBootstrapState).where(MetricBootstrapState.bootstrap_key == "project_metrics_v1")
+    )
+    bootstrap_state = bootstrap_result.scalar_one_or_none()
+
+    if bootstrap_state is None:
+        raise MetricsTrackingNotInitializedError("Metrics bootstrap has not been completed.")
+
+    history_info = MetricHistoryInfo(
+        bootstrap_version=bootstrap_state.schema_version,
+        baseline_at=bootstrap_state.baseline_at,
+        complete_since=bootstrap_state.baseline_at,
+        completeness=bootstrap_state.history_completeness,
+        baseline_event_count=bootstrap_state.baseline_event_count,
+    )
+
     tracking_started_at = state.tracking_started_at
     historical_complete = state.historical_complete
 
@@ -596,6 +637,7 @@ async def build_metrics_report(session: AsyncSession) -> MetricSummaryReport:
         generated_at=_utcnow_iso(),
         historical_complete=historical_complete,
     )
+
 
     from app.models import Application, Job, Resume
     from sqlalchemy import func
@@ -673,8 +715,8 @@ async def build_metrics_report(session: AsyncSession) -> MetricSummaryReport:
         generated_at=base_report.generated_at,
         historical_complete=base_report.historical_complete,
         capabilities=base_report.capabilities,
+        history=history_info,
     )
-
 
 
 async def initialize_metric_tracking_state(

@@ -808,7 +808,9 @@ export async function fetchResumePositioningContext(
 ): Promise<{ resume_id: string; parent_id: string }> {
   let resp: Response;
   try {
-    resp = await apiFetch(`/resumes/${resumeId}`, { signal: options?.signal });
+    resp = await apiFetch(`/resumes?resume_id=${encodeURIComponent(resumeId)}`, {
+      signal: options?.signal,
+    });
   } catch (err: unknown) {
     if (err instanceof DOMException && err.name === 'AbortError') {
       throw err;
@@ -832,19 +834,19 @@ export async function fetchResumePositioningContext(
     throw new CareerPositioningApiError('UNKNOWN', errMsg, resp.status);
   }
 
-  let data: unknown;
+  let payload: unknown;
   try {
-    data = await resp.json();
+    payload = await resp.json();
   } catch {
     throw new CareerPositioningApiError('INVALID_CONTRACT', 'Response is not valid JSON');
   }
 
-  if (!isObject(data)) {
+  if (!isObject(payload) || !isObject(payload.data)) {
     throw new CareerPositioningApiError('INVALID_CONTRACT', 'Resume response is not an object.');
   }
 
-  const resume_id = data.id;
-  const parent_id = data.parent_id;
+  const resume_id = payload.data.resume_id;
+  const parent_id = payload.data.parent_id;
 
   if (typeof resume_id !== 'string' || !resume_id.trim()) {
     throw new CareerPositioningApiError('INVALID_CONTRACT', 'Invalid or missing resume id.');

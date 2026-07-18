@@ -406,7 +406,14 @@ describe('fetchCareerPositioning & fetchResumeJobContext & fetchResumePositionin
 
   it('36. fetchResumePositioningContext fetches correct resume fields and validates', async () => {
     const mockResponse = new Response(
-      JSON.stringify({ id: 'resume-123', parent_id: 'parent-123', content: 'extra' }),
+      JSON.stringify({
+        request_id: 'request-123',
+        data: {
+          resume_id: 'resume-123',
+          parent_id: 'parent-123',
+          raw_resume: { content: 'extra' },
+        },
+      }),
       {
         status: 200,
         headers: {
@@ -416,9 +423,38 @@ describe('fetchCareerPositioning & fetchResumeJobContext & fetchResumePositionin
     );
     const mockFetch = vi.mocked(apiFetch).mockResolvedValue(mockResponse);
     const res = await fetchResumePositioningContext('resume-123');
-    expect(mockFetch).toHaveBeenCalledWith('/resumes/resume-123', { signal: undefined });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockFetch).toHaveBeenCalledWith('/resumes?resume_id=resume-123', {
+      signal: undefined,
+    });
+    expect(mockFetch).not.toHaveBeenCalledWith('/resumes/resume-123', expect.anything());
     expect(res.resume_id).toBe('resume-123');
     expect(res.parent_id).toBe('parent-123');
     expect('content' in res).toBe(false);
+  });
+
+  it('37. fetchResumePositioningContext preserves AbortSignal and URL-encodes the query id', async () => {
+    const mockResponse = new Response(
+      JSON.stringify({
+        request_id: 'request-encoded',
+        data: {
+          resume_id: 'resume/id with spaces',
+          parent_id: 'parent-123',
+          raw_resume: { content: 'extra' },
+        },
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    );
+    const mockFetch = vi.mocked(apiFetch).mockResolvedValue(mockResponse);
+    const controller = new AbortController();
+
+    await fetchResumePositioningContext('resume/id with spaces', {
+      signal: controller.signal,
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockFetch).toHaveBeenCalledWith('/resumes?resume_id=resume%2Fid%20with%20spaces', {
+      signal: controller.signal,
+    });
   });
 });

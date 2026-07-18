@@ -15,7 +15,7 @@ class TestApplyProviderSpecificParams:
         """Ollama qwen models should have think=false to disable reasoning."""
         kwargs = {}
         _apply_provider_specific_params(kwargs, "ollama", "ollama_chat/qwen2:14b")
-        
+
         assert kwargs.get("think") is False, "think should be False for qwen"
         assert "options" in kwargs, "options dict should be created"
 
@@ -23,14 +23,14 @@ class TestApplyProviderSpecificParams:
         """Ollama qwen models should have num_ctx=8192 for extended context."""
         kwargs = {}
         _apply_provider_specific_params(kwargs, "ollama", "ollama_chat/qwen3:14b")
-        
+
         assert kwargs["options"]["num_ctx"] == 8192, "num_ctx should be 8192 for qwen"
 
     def test_qwen_model_receives_stop_reasoning_true(self):
         """Ollama qwen models should have stop_reasoning=true in options."""
         kwargs = {}
         _apply_provider_specific_params(kwargs, "ollama", "ollama/qwen:14b")
-        
+
         assert (
             kwargs["options"]["stop_reasoning"] is True
         ), "stop_reasoning should be True in options"
@@ -39,7 +39,7 @@ class TestApplyProviderSpecificParams:
         """Non-qwen Ollama models (e.g., llama2) should not receive qwen params."""
         kwargs = {}
         _apply_provider_specific_params(kwargs, "ollama", "ollama_chat/llama2:13b")
-        
+
         # kwargs should remain empty or have minimal defaults
         assert "think" not in kwargs or kwargs.get("think") is None
         assert "options" not in kwargs or "num_ctx" not in kwargs.get("options", {})
@@ -48,7 +48,7 @@ class TestApplyProviderSpecificParams:
         """Non-Ollama providers should not receive qwen params."""
         kwargs = {}
         _apply_provider_specific_params(kwargs, "openai", "gpt-4")
-        
+
         assert "think" not in kwargs
         assert "options" not in kwargs
 
@@ -56,7 +56,7 @@ class TestApplyProviderSpecificParams:
         """Anthropic Claude models should not receive qwen params."""
         kwargs = {}
         _apply_provider_specific_params(kwargs, "anthropic", "claude-3-opus")
-        
+
         assert "think" not in kwargs
         assert "options" not in kwargs
 
@@ -75,7 +75,7 @@ class TestApplyProviderSpecificParams:
         """Existing options dict should not be overwritten."""
         kwargs = {"options": {"temperature": 0.5}}
         _apply_provider_specific_params(kwargs, "ollama", "ollama/qwen3:14b")
-        
+
         # New params should be added to existing options
         assert kwargs["options"]["temperature"] == 0.5
         assert kwargs["options"]["num_ctx"] == 8192
@@ -111,7 +111,7 @@ class TestCalculateTimeout:
         """Timeout should scale with token count."""
         timeout_4k = _calculate_timeout("json", 4096, "ollama")
         timeout_8k = _calculate_timeout("json", 8192, "ollama")
-        
+
         # 8k tokens should be roughly 2x timeout of 4k
         # timeout_8k = 180 * (8192/4096) * 3.0 = 180 * 2 * 3.0 = 1080
         assert timeout_8k == 1080, f"Expected 1080, got {timeout_8k}"
@@ -139,7 +139,7 @@ class TestTimeoutConsistency:
         # Max single LLM call timeout for ollama+qwen at 8192 tokens:
         max_llm_timeout = _calculate_timeout("json", 8192, "ollama")
         endpoint_timeout = 1200  # From config.py
-        
+
         # Allow for at least 2 sequential LLM calls + overhead
         assert (
             endpoint_timeout > max_llm_timeout
@@ -153,7 +153,7 @@ class TestTimeoutConsistency:
         # Original: 180s for json with 4096 tokens
         timeout_old = 180
         timeout_new = _calculate_timeout("json", 4096, "openai")
-        
+
         assert timeout_new == timeout_old, (
             f"OpenAI timeout changed: {timeout_old}s → {timeout_new}s"
         )

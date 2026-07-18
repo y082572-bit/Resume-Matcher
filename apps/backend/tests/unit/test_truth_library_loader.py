@@ -292,10 +292,10 @@ def test_get_truth_library_caches(temp_truth_library: Path, valid_truth_library:
 
         # First call
         result1 = get_truth_library()
-        
+
         # Delete file to prove second call uses cache
         temp_truth_library.unlink()
-        
+
         # Second call should still work (from cache)
         result2 = get_truth_library()
         assert result1 == result2 == valid_truth_library

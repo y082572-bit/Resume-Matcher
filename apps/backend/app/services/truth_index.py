@@ -325,7 +325,7 @@ def _index_employment_entry(
 
 def _deep_copy_scope(scope: EmploymentTruthScope) -> EmploymentTruthScope:
     """Create a deep copy of an EmploymentTruthScope.
-    
+
     Protects against mutations of returned copies.
     """
     return EmploymentTruthScope(

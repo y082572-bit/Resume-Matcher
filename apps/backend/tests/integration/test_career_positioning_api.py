@@ -25,7 +25,7 @@ def get_valid_payload_fixture() -> Dict[str, Any]:
     """Factory returning a typed, mutable fixture payload for test isolation."""
     return {
         "meta": {
-            "kandidat": "Marek Grabowski",
+            "kandidat": "Jan Testowy",
             "wersja": "1.1",
             "dataAktualizacji": "2026-07-16",
             "status": "AKTYWNA"
@@ -35,19 +35,19 @@ def get_valid_payload_fixture() -> Dict[str, Any]:
                 "wpisy": [
                     {
                         "id": "dz-1",
-                        "firma": "ERGO Hestia",
+                        "firma": "Firma Alpha",
                         "stanowisko": "Regionalny Menedżer Sprzedaży",
                         "okresOd": "2024-08",
                         "okresDo": "2025-07",
                         "aktywnosci": ["zarządzanie sprzedażą", "budżet marketingowy", "odpowiedzialność za P&L"],
-                        "wynikLiczbowy": "116% wolumenu",
+                        "wynikLiczbowy": "123% wolumenu",
                         "skalaOdpowiedzialnosci": "zarządzanie zespołem do 10 osób",
                         "status": "PRAWDA_ZATWIERDZONA_PRZEZ_UŻYTKOWNIKA",
                         "uzywacWCV": True,
                     },
                     {
                         "id": "dz-2",
-                        "firma": "Warta",
+                        "firma": "Firma Beta",
                         "stanowisko": "Menedżer ds. Projektów",
                         "okresOd": "2023-04",
                         "okresDo": "2024-03",
@@ -715,7 +715,7 @@ def test_37_project_manager_unconfirmed_has_no_mgmt_years() -> None:
     lib["kategorie"]["doswiadczenieZawodowe"]["wpisy"] = [
         {
             "id": "dz-1",
-            "firma": "ERGO Hestia",
+            "firma": "Firma Alpha",
             "stanowisko": "Project Manager",
             "okresOd": "2024-08",
             "okresDo": "2025-07",
@@ -733,7 +733,7 @@ def test_38_product_manager_unconfirmed_has_no_mgmt_years() -> None:
     lib["kategorie"]["doswiadczenieZawodowe"]["wpisy"] = [
         {
             "id": "dz-1",
-            "firma": "ERGO Hestia",
+            "firma": "Firma Alpha",
             "stanowisko": "Product Manager",
             "okresOd": "2024-08",
             "okresDo": "2025-07",
@@ -751,7 +751,7 @@ def test_39_account_manager_unconfirmed_has_no_mgmt_years() -> None:
     lib["kategorie"]["doswiadczenieZawodowe"]["wpisy"] = [
         {
             "id": "dz-1",
-            "firma": "ERGO Hestia",
+            "firma": "Firma Alpha",
             "stanowisko": "Account Manager",
             "okresOd": "2024-08",
             "okresDo": "2025-07",
@@ -769,7 +769,7 @@ def test_40_lead_developer_unconfirmed_has_no_mgmt_years() -> None:
     lib["kategorie"]["doswiadczenieZawodowe"]["wpisy"] = [
         {
             "id": "dz-1",
-            "firma": "ERGO Hestia",
+            "firma": "Firma Alpha",
             "stanowisko": "Lead Developer",
             "okresOd": "2024-08",
             "okresDo": "2025-07",
@@ -983,7 +983,7 @@ def test_53_team_proof_ordering_first_has_last_not() -> None:
     lib["kategorie"]["doswiadczenieZawodowe"]["wpisy"] = [
         {
             "id": "dz-1",
-            "firma": "ERGO Hestia",
+            "firma": "Firma Alpha",
             "stanowisko": "Kierownik Sprzedaży",
             "okresOd": "2024-08",
             "okresDo": "2025-07",
@@ -993,7 +993,7 @@ def test_53_team_proof_ordering_first_has_last_not() -> None:
         },
         {
             "id": "dz-2",
-            "firma": "Warta",
+            "firma": "Firma Beta",
             "stanowisko": "Dyrektor",
             "okresOd": "2023-08",
             "okresDo": "2024-07",
@@ -1013,7 +1013,7 @@ def test_54_team_proof_ordering_last_has_first_not() -> None:
     lib["kategorie"]["doswiadczenieZawodowe"]["wpisy"] = [
         {
             "id": "dz-1",
-            "firma": "ERGO Hestia",
+            "firma": "Firma Alpha",
             "stanowisko": "Dyrektor",
             "okresOd": "2023-08",
             "okresDo": "2024-07",
@@ -1023,7 +1023,7 @@ def test_54_team_proof_ordering_last_has_first_not() -> None:
         },
         {
             "id": "dz-2",
-            "firma": "Warta",
+            "firma": "Firma Beta",
             "stanowisko": "Kierownik Sprzedaży",
             "okresOd": "2024-08",
             "okresDo": "2025-07",
@@ -1043,7 +1043,7 @@ def test_55_entry_without_team_proof_does_not_increase_management_years() -> Non
     lib["kategorie"]["doswiadczenieZawodowe"]["wpisy"] = [
         {
             "id": "dz-1",
-            "firma": "ERGO Hestia",
+            "firma": "Firma Alpha",
             "stanowisko": "Menedżer",
             "okresOd": "2024-01",
             "okresDo": "2024-12",

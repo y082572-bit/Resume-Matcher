@@ -24,17 +24,17 @@ from app.services.truth_validator import (
 # Fixtures
 
 @pytest.fixture
-def ergo_hestia_fact():
-    """ERGO Hestia 116% fact from Truth Library."""
+def firma_alpha_fact():
+    """Firma Alpha 123% fact from Truth Library."""
     return TruthFact(
         fact_id="dz-2:wynikLiczbowy",
         section="doswiadczenieZawodowe",
         employment_id="dz-2",
-        company="ERGO Hestia",
+        company="Firma Alpha",
         role="Regionalny Menedżer Sprzedaży",
         fact_type="wynikLiczbowy",
-        original_text="116% wolumenu sprzedaży przy średnim wyniku przedstawicielstwa 96%",
-        normalized_text=normalize_truth_text("116% wolumenu sprzedaży przy średnim wyniku przedstawicielstwa 96%"),
+        original_text="123% wolumenu sprzedaży przy średnim wyniku przedstawicielstwa 89%",
+        normalized_text=normalize_truth_text("123% wolumenu sprzedaży przy średnim wyniku przedstawicielstwa 89%"),
         status="PRAWDA_ZATWIERDZONA_PRZEZ_UŻYTKOWNIKA",
         use_in_cv=True,
         requires_approval=False,
@@ -43,17 +43,17 @@ def ergo_hestia_fact():
 
 
 @pytest.fixture
-def warta_scope():
-    """Warta employment scope from Truth Library."""
-    warta_96_fact = TruthFact(
+def firma_beta_scope():
+    """Firma Beta employment scope from Truth Library."""
+    firma_beta_96_fact = TruthFact(
         fact_id="dz-3:wynikLiczbowy",
         section="doswiadczenieZawodowe",
         employment_id="dz-3",
-        company="Warta",
+        company="Firma Beta",
         role="Menedżer Dystrybucji",
         fact_type="wynikLiczbowy",
-        original_text="96% wolumenu",
-        normalized_text=normalize_truth_text("96% wolumenu"),
+        original_text="89% wolumenu",
+        normalized_text=normalize_truth_text("89% wolumenu"),
         status="PRAWDA_ZATWIERDZONA_PRZEZ_UŻYTKOWNIKA",
         use_in_cv=True,
         requires_approval=False,
@@ -64,11 +64,11 @@ def warta_scope():
         fact_id="dz-3:aktywnosci:0",
         section="doswiadczenieZawodowe",
         employment_id="dz-3",
-        company="Warta",
+        company="Firma Beta",
         role="Menedżer Dystrybucji",
         fact_type="aktywnosci",
-        original_text="wzrost efektywności ze 36% do 96%",
-        normalized_text=normalize_truth_text("wzrost efektywności ze 36% do 96%"),
+        original_text="wzrost efektywności ze 41% do 89%",
+        normalized_text=normalize_truth_text("wzrost efektywności ze 41% do 89%"),
         status="PRAWDA_ZATWIERDZONA_PRZEZ_UŻYTKOWNIKA",
         use_in_cv=True,
         requires_approval=False,
@@ -77,23 +77,23 @@ def warta_scope():
 
     scope = EmploymentTruthScope(
         employment_id="dz-3",
-        company="Warta",
+        company="Firma Beta",
         role="Menedżer Dystrybucji",
         role_alt="Kierownik Dystrybucji",
     )
-    scope.numeric_results = [warta_96_fact, growth_fact]
-    scope.allowed_facts = [warta_96_fact, growth_fact]
+    scope.numeric_results = [firma_beta_96_fact, growth_fact]
+    scope.allowed_facts = [firma_beta_96_fact, growth_fact]
     return scope
 
 
 @pytest.fixture
-def ergo_hestia_scope(ergo_hestia_fact):
-    """ERGO Hestia employment scope from Truth Library."""
+def firma_alpha_scope(firma_alpha_fact):
+    """Firma Alpha employment scope from Truth Library."""
     budget_fact = TruthFact(
         fact_id="dz-2:aktywnosci:2",
         section="doswiadczenieZawodowe",
         employment_id="dz-2",
-        company="ERGO Hestia",
+        company="Firma Alpha",
         role="Regionalny Menedżer Sprzedaży",
         fact_type="aktywnosci",
         original_text="odpowiedzialność za budżet kontraktowy oraz ustalanie poziomów kontraktowych",
@@ -108,7 +108,7 @@ def ergo_hestia_scope(ergo_hestia_fact):
         fact_id="dz-2:aktywnosci:3",
         section="doswiadczenieZawodowe",
         employment_id="dz-2",
-        company="ERGO Hestia",
+        company="Firma Alpha",
         role="Regionalny Menedżer Sprzedaży",
         fact_type="aktywnosci",
         original_text="odpowiedzialność za budżet marketingowy wspierający realizację celów sprzedażowych",
@@ -123,11 +123,11 @@ def ergo_hestia_scope(ergo_hestia_fact):
         fact_id="dz-2:skalaOdpowiedzialnosci",
         section="doswiadczenieZawodowe",
         employment_id="dz-2",
-        company="ERGO Hestia",
+        company="Firma Alpha",
         role="Regionalny Menedżer Sprzedaży",
         fact_type="skalaOdpowiedzialnosci",
-        original_text="Portfel finansowy kilkudziesięciu milionów złotych",
-        normalized_text=normalize_truth_text("Portfel finansowy kilkudziesięciu milionów złotych"),
+        original_text="Portfel finansowy ponad dziesięciu milionów złotych",
+        normalized_text=normalize_truth_text("Portfel finansowy ponad dziesięciu milionów złotych"),
         status="PRAWDA_ZATWIERDZONA_PRZEZ_UŻYTKOWNIKA",
         use_in_cv=True,
         requires_approval=False,
@@ -136,31 +136,31 @@ def ergo_hestia_scope(ergo_hestia_fact):
 
     scope = EmploymentTruthScope(
         employment_id="dz-2",
-        company="ERGO Hestia",
+        company="Firma Alpha",
         role="Regionalny Menedżer Sprzedaży",
         role_alt="Regionalny Menedżer",
     )
-    scope.numeric_results = [ergo_hestia_fact]
+    scope.numeric_results = [firma_alpha_fact]
     scope.responsibility_scale = [portfolio_fact]
     scope.activities = [budget_fact, marketing_budget_fact]
-    scope.allowed_facts = [ergo_hestia_fact, budget_fact, marketing_budget_fact, portfolio_fact]
+    scope.allowed_facts = [firma_alpha_fact, budget_fact, marketing_budget_fact, portfolio_fact]
     return scope
 
 
 @pytest.fixture
-def truth_index_with_employment(ergo_hestia_scope, warta_scope):
-    """TruthIndex with ERGO Hestia and Warta entries."""
+def truth_index_with_employment(firma_alpha_scope, firma_beta_scope):
+    """TruthIndex with Firma Alpha and Firma Beta entries."""
     index = TruthIndex()
-    index.employment_by_id["dz-2"] = ergo_hestia_scope
-    index.employment_by_id["dz-3"] = warta_scope
-    index.employment_by_normalized_company["ergo hestia"] = ergo_hestia_scope
-    index.employment_by_normalized_company["warta"] = warta_scope
+    index.employment_by_id["dz-2"] = firma_alpha_scope
+    index.employment_by_id["dz-3"] = firma_beta_scope
+    index.employment_by_normalized_company["ergo hestia"] = firma_alpha_scope
+    index.employment_by_normalized_company["firma beta"] = firma_beta_scope
     index.blocked_rules = [
         "ogólna odpowiedzialność budżetowa (bez zatwierdzenia)"
     ]
     index.exceptions = [
-        "budżet kontraktowy DOZWOLONE w ERGO Hestii",
-        "budżet marketingowy DOZWOLONE w ERGO Hestii",
+        "budżet kontraktowy DOZWOLONE w Firmie Alpha",
+        "budżet marketingowy DOZWOLONE w Firmie Alpha",
     ]
     return index
 
@@ -169,8 +169,8 @@ def truth_index_with_employment(ergo_hestia_scope, warta_scope):
 
 def test_extract_numbers_percentage():
     """Test extraction of percentages."""
-    numbers = _extract_numbers("116% wolumenu sprzedaży")
-    assert "116%" in numbers
+    numbers = _extract_numbers("123% wolumenu sprzedaży")
+    assert "123%" in numbers
 
 
 def test_extract_numbers_range_endash():
@@ -197,18 +197,18 @@ def test_extract_numbers_spaced():
     assert "85" in numbers
 
 
-# Test 1: ERGO Hestia, 116% → PASS
+# Test 1: Firma Alpha, 123% → PASS
 
-def test_ergo_hestia_116_percent_pass(truth_index_with_employment):
-    """Test 1: ERGO Hestia claim with 116% should PASS."""
+def test_firma_alpha_123_percent_pass(truth_index_with_employment):
+    """Test 1: Firma Alpha claim with 123% should PASS."""
     claims = [
         ResumeClaim(
             claim_id="claim-1",
             section="numeric_result",
             employment_id="dz-2",
-            company="ERGO Hestia",
+            company="Firma Alpha",
             role="Regionalny Menedżer Sprzedaży",
-            text="116% wolumenu sprzedaży przy średnim wyniku przedstawicielstwa 96%",
+            text="123% wolumenu sprzedaży przy średnim wyniku przedstawicielstwa 89%",
         )
     ]
     result = audit_resume_claims(claims, truth_index_with_employment)
@@ -218,18 +218,18 @@ def test_ergo_hestia_116_percent_pass(truth_index_with_employment):
     assert any(v.code == "TRUTH_SUPPORTED_FACT" for v in result.violations)
 
 
-# Test 2: Warta, 116% → BLOCK, TRUTH_CROSS_EMPLOYMENT_NUMBER
+# Test 2: Firma Beta, 123% → BLOCK, TRUTH_CROSS_EMPLOYMENT_NUMBER
 
-def test_warta_116_percent_block(truth_index_with_employment):
-    """Test 2: Warta claim with 116% should BLOCK (cross-employment)."""
+def test_firma_beta_123_percent_block(truth_index_with_employment):
+    """Test 2: Firma Beta claim with 123% should BLOCK (cross-employment)."""
     claims = [
         ResumeClaim(
             claim_id="claim-2",
             section="numeric_result",
             employment_id="dz-3",
-            company="Warta",
+            company="Firma Beta",
             role="Menedżer Dystrybucji",
-            text="116% wzrostu wolumenu",
+            text="123% wzrostu wolumenu",
         )
     ]
     result = audit_resume_claims(claims, truth_index_with_employment)
@@ -241,16 +241,16 @@ def test_warta_116_percent_block(truth_index_with_employment):
     )
 
 
-# Test 3: ERGO Hestia, 10–15 doradców → BLOCK, TRUTH_UNSUPPORTED_NUMBER
+# Test 3: Firma Alpha, 10–15 doradców → BLOCK, TRUTH_UNSUPPORTED_NUMBER
 
-def test_ergo_hestia_unsupported_range_block(truth_index_with_employment):
-    """Test 3: ERGO Hestia claim with unsupported 10–15 → BLOCK."""
+def test_firma_alpha_unsupported_range_block(truth_index_with_employment):
+    """Test 3: Firma Alpha claim with unsupported 10–15 → BLOCK."""
     claims = [
         ResumeClaim(
             claim_id="claim-3",
             section="activities",
             employment_id="dz-2",
-            company="ERGO Hestia",
+            company="Firma Alpha",
             role="Regionalny Menedżer Sprzedaży",
             text="zarządzanie zespołem 10–15 doradców",
         )
@@ -264,18 +264,18 @@ def test_ergo_hestia_unsupported_range_block(truth_index_with_employment):
     )
 
 
-# Test 4: Warta, wzrost z 36% do 96% → PASS
+# Test 4: Firma Beta, wzrost z 41% do 89% → PASS
 
-def test_warta_growth_pass(truth_index_with_employment):
-    """Test 4: Warta claim about growth 36% → 96% should PASS."""
+def test_firma_beta_growth_pass(truth_index_with_employment):
+    """Test 4: Firma Beta claim about growth 41% → 89% should PASS."""
     claims = [
         ResumeClaim(
             claim_id="claim-4",
             section="activities",
             employment_id="dz-3",
-            company="Warta",
+            company="Firma Beta",
             role="Menedżer Dystrybucji",
-            text="wzrost efektywności ze 36% do 96%",
+            text="wzrost efektywności ze 41% do 89%",
         )
     ]
     result = audit_resume_claims(claims, truth_index_with_employment)
@@ -284,16 +284,16 @@ def test_warta_growth_pass(truth_index_with_employment):
     assert any(v.code == "TRUTH_SUPPORTED_FACT" for v in result.violations)
 
 
-# Test 5: ERGO Hestia, budżet kontraktowy → PASS
+# Test 5: Firma Alpha, budżet kontraktowy → PASS
 
-def test_ergo_hestia_budget_kontraktowy_pass(truth_index_with_employment):
-    """Test 5: ERGO Hestia claim about contract budget should PASS."""
+def test_firma_alpha_budget_kontraktowy_pass(truth_index_with_employment):
+    """Test 5: Firma Alpha claim about contract budget should PASS."""
     claims = [
         ResumeClaim(
             claim_id="claim-5",
             section="activities",
             employment_id="dz-2",
-            company="ERGO Hestia",
+            company="Firma Alpha",
             role="Regionalny Menedżer Sprzedaży",
             text="odpowiedzialność za budżet kontraktowy oraz ustalanie poziomów kontraktowych",
         )
@@ -304,16 +304,16 @@ def test_ergo_hestia_budget_kontraktowy_pass(truth_index_with_employment):
     assert any(v.code == "TRUTH_SUPPORTED_FACT" for v in result.violations)
 
 
-# Test 6: ERGO Hestia, budżet marketingowy → PASS
+# Test 6: Firma Alpha, budżet marketingowy → PASS
 
-def test_ergo_hestia_budget_marketing_pass(truth_index_with_employment):
-    """Test 6: ERGO Hestia claim about marketing budget should PASS."""
+def test_firma_alpha_budget_marketing_pass(truth_index_with_employment):
+    """Test 6: Firma Alpha claim about marketing budget should PASS."""
     claims = [
         ResumeClaim(
             claim_id="claim-6",
             section="activities",
             employment_id="dz-2",
-            company="ERGO Hestia",
+            company="Firma Alpha",
             role="Regionalny Menedżer Sprzedaży",
             text="odpowiedzialność za budżet marketingowy wspierający realizację celów sprzedażowych",
         )
@@ -324,18 +324,18 @@ def test_ergo_hestia_budget_marketing_pass(truth_index_with_employment):
     assert any(v.code == "TRUTH_SUPPORTED_FACT" for v in result.violations)
 
 
-# Test 7: ERGO Hestia, portfel kilkudziesięciu milionów → PASS
+# Test 7: Firma Alpha, portfel ponad dziesięciu milionów → PASS
 
-def test_ergo_hestia_portfolio_pass(truth_index_with_employment):
-    """Test 7: ERGO Hestia claim about portfolio should PASS."""
+def test_firma_alpha_portfolio_pass(truth_index_with_employment):
+    """Test 7: Firma Alpha claim about portfolio should PASS."""
     claims = [
         ResumeClaim(
             claim_id="claim-7",
             section="responsibility_scale",
             employment_id="dz-2",
-            company="ERGO Hestia",
+            company="Firma Alpha",
             role="Regionalny Menedżer Sprzedaży",
-            text="Portfel finansowy kilkudziesięciu milionów złotych",
+            text="Portfel finansowy ponad dziesięciu milionów złotych",
         )
     ]
     result = audit_resume_claims(claims, truth_index_with_employment)
@@ -344,7 +344,7 @@ def test_ergo_hestia_portfolio_pass(truth_index_with_employment):
     assert any(v.code == "TRUTH_SUPPORTED_FACT" for v in result.violations)
 
 
-# Test 8: Same point twice in ERGO Hestia → BLOCK, TRUTH_DUPLICATE_CLAIM
+# Test 8: Same point twice in Firma Alpha → BLOCK, TRUTH_DUPLICATE_CLAIM
 
 def test_duplicate_claim_same_employment_block(truth_index_with_employment):
     """Test 8: Duplicate claim in same employment should BLOCK."""
@@ -353,7 +353,7 @@ def test_duplicate_claim_same_employment_block(truth_index_with_employment):
             claim_id="claim-8a",
             section="activities",
             employment_id="dz-2",
-            company="ERGO Hestia",
+            company="Firma Alpha",
             role="Regionalny Menedżer Sprzedaży",
             text="odpowiedzialność za budżet kontraktowy",
         ),
@@ -361,7 +361,7 @@ def test_duplicate_claim_same_employment_block(truth_index_with_employment):
             claim_id="claim-8b",
             section="activities",
             employment_id="dz-2",
-            company="ERGO Hestia",
+            company="Firma Alpha",
             role="Regionalny Menedżer Sprzedaży",
             text="odpowiedzialność za budżet kontraktowy",
         ),
@@ -381,7 +381,7 @@ def test_duplicate_different_case_punctuation_block(truth_index_with_employment)
             claim_id="claim-9a",
             section="activities",
             employment_id="dz-2",
-            company="ERGO Hestia",
+            company="Firma Alpha",
             role="Regionalny Menedżer Sprzedaży",
             text="ODPOWIEDZIALNOŚĆ ZA BUDŻET KONTRAKTOWY",
         ),
@@ -389,7 +389,7 @@ def test_duplicate_different_case_punctuation_block(truth_index_with_employment)
             claim_id="claim-9b",
             section="activities",
             employment_id="dz-2",
-            company="ERGO Hestia",
+            company="Firma Alpha",
             role="Regionalny Menedżer Sprzedaży",
             text="odpowiedzialność za budżet kontraktowy.",
         ),
@@ -408,7 +408,7 @@ def test_unchanged_original_claim_pass(truth_index_with_employment):
             claim_id="orig-1",
             section="activities",
             employment_id="dz-2",
-            company="ERGO Hestia",
+            company="Firma Alpha",
             role="Regionalny Menedżer Sprzedaży",
             text="zarządzanie sprzedażą",
         )
@@ -418,7 +418,7 @@ def test_unchanged_original_claim_pass(truth_index_with_employment):
             claim_id="claim-10",
             section="activities",
             employment_id="dz-2",
-            company="ERGO Hestia",
+            company="Firma Alpha",
             role="Regionalny Menedżer Sprzedaży",
             text="zarządzanie sprzedażą",
         )
@@ -439,7 +439,7 @@ def test_ungrounded_text_review(truth_index_with_employment):
             claim_id="claim-11",
             section="activities",
             employment_id="dz-2",
-            company="ERGO Hestia",
+            company="Firma Alpha",
             role="Regionalny Menedżer Sprzedaży",
             text="wspieranie rozwoju zespołu sprzedażowego",
         )
@@ -450,7 +450,7 @@ def test_ungrounded_text_review(truth_index_with_employment):
     assert any(v.code == "TRUTH_UNGROUNDED_TEXT" for v in result.warnings)
 
 
-# Test 12: Budget responsibility general prohibition does not block ERGO Hestii exceptions
+# Test 12: Budget responsibility general prohibition does not block Firmie Alpha exceptions
 
 def test_blocked_rule_with_exceptions(truth_index_with_employment):
     """Test 12: General budget prohibition should not block approved exceptions."""
@@ -459,17 +459,17 @@ def test_blocked_rule_with_exceptions(truth_index_with_employment):
             claim_id="claim-12a",
             section="activities",
             employment_id="dz-2",
-            company="ERGO Hestia",
+            company="Firma Alpha",
             role="Regionalny Menedżer Sprzedaży",
-            text="budżet kontraktowy DOZWOLONE w ERGO Hestii",
+            text="budżet kontraktowy DOZWOLONE w Firmie Alpha",
         ),
         ResumeClaim(
             claim_id="claim-12b",
             section="activities",
             employment_id="dz-2",
-            company="ERGO Hestia",
+            company="Firma Alpha",
             role="Regionalny Menedżer Sprzedaży",
-            text="budżet marketingowy DOZWOLONE w ERGO Hestii",
+            text="budżet marketingowy DOZWOLONE w Firmie Alpha",
         ),
     ]
     result = audit_resume_claims(claims, truth_index_with_employment)
@@ -486,7 +486,7 @@ def test_budget_different_company_block(truth_index_with_employment):
             claim_id="claim-13",
             section="activities",
             employment_id="dz-3",
-            company="Warta",
+            company="Firma Beta",
             role="Menedżer Dystrybucji",
             text="ogólna odpowiedzialność budżetowa",
         )
@@ -508,9 +508,9 @@ def test_block_result_passed_false(truth_index_with_employment):
             claim_id="claim-14",
             section="activities",
             employment_id="dz-3",
-            company="Warta",
+            company="Firma Beta",
             role="Menedżer Dystrybucji",
-            text="116% wzrostu",
+            text="123% wzrostu",
         )
     ]
     result = audit_resume_claims(claims, truth_index_with_employment)
@@ -526,7 +526,7 @@ def test_review_result_passed_true(truth_index_with_employment):
             claim_id="claim-15",
             section="activities",
             employment_id="dz-2",
-            company="ERGO Hestia",
+            company="Firma Alpha",
             role="Regionalny Menedżer Sprzedaży",
             text="nowy nieznany opis działania",
         )
@@ -545,9 +545,9 @@ def test_evidence_references_correct(truth_index_with_employment):
             claim_id="claim-16",
             section="numeric_result",
             employment_id="dz-2",
-            company="ERGO Hestia",
+            company="Firma Alpha",
             role="Regionalny Menedżer Sprzedaży",
-            text="116% wolumenu sprzedaży przy średnim wyniku przedstawicielstwa 96%",
+            text="123% wolumenu sprzedaży przy średnim wyniku przedstawicielstwa 89%",
         )
     ]
     result = audit_resume_claims(claims, truth_index_with_employment)
@@ -568,7 +568,7 @@ def test_validator_does_not_mutate(truth_index_with_employment):
             claim_id="claim-17",
             section="activities",
             employment_id="dz-2",
-            company="ERGO Hestia",
+            company="Firma Alpha",
             role="Regionalny Menedżer Sprzedaży",
             text="test claim",
         )
@@ -584,7 +584,7 @@ def test_validator_does_not_mutate(truth_index_with_employment):
 # Security regression tests
 
 def test_numeric_extraction_is_non_overlapping():
-    assert _extract_numbers("116%") == ["116%"]
+    assert _extract_numbers("123%") == ["123%"]
     assert _extract_numbers("10–15 doradców") == ["10–15"]
     assert _extract_numbers("1,5 mln") == ["1,5"]
     assert _extract_numbers("12 500 osób") == ["12 500"]
@@ -599,7 +599,7 @@ def test_dates_are_not_business_numbers():
 def test_percentage_does_not_authorize_plain_count(truth_index_with_employment):
     claim = ResumeClaim(
         claim_id="reg-1", section="activities", employment_id="dz-2",
-        company="ERGO Hestia", role="Regionalny Menedżer Sprzedaży",
+        company="Firma Alpha", role="Regionalny Menedżer Sprzedaży",
         text="zarządzanie zespołem 116 osób",
     )
     result = audit_resume_claims([claim], truth_index_with_employment)
@@ -610,8 +610,8 @@ def test_percentage_does_not_authorize_plain_count(truth_index_with_employment):
 def test_known_number_with_changed_meaning_requires_review(truth_index_with_employment):
     claim = ResumeClaim(
         claim_id="reg-2", section="numeric_result", employment_id="dz-2",
-        company="ERGO Hestia", role="Regionalny Menedżer Sprzedaży",
-        text="116% wzrostu zysku przy wyniku 96%",
+        company="Firma Alpha", role="Regionalny Menedżer Sprzedaży",
+        text="123% wzrostu zysku przy wyniku 89%",
     )
     result = audit_resume_claims([claim], truth_index_with_employment)
     assert result.passed
@@ -632,8 +632,8 @@ def test_unknown_employment_with_number_blocks(truth_index_with_employment):
 def test_company_scope_mismatch_blocks(truth_index_with_employment):
     claim = ResumeClaim(
         claim_id="reg-4", section="numeric_result", employment_id="dz-2",
-        company="Warta", role="Regionalny Menedżer Sprzedaży",
-        text="116% wolumenu sprzedaży przy średnim wyniku przedstawicielstwa 96%",
+        company="Firma Beta", role="Regionalny Menedżer Sprzedaży",
+        text="123% wolumenu sprzedaży przy średnim wyniku przedstawicielstwa 89%",
     )
     result = audit_resume_claims([claim], truth_index_with_employment)
     assert not result.passed
@@ -643,7 +643,7 @@ def test_company_scope_mismatch_blocks(truth_index_with_employment):
 def test_original_claim_cannot_bypass_unsupported_number(truth_index_with_employment):
     original = [ResumeClaim(
         claim_id="orig-reg-5", section="activities", employment_id="dz-2",
-        company="ERGO Hestia", role="Regionalny Menedżer Sprzedaży",
+        company="Firma Alpha", role="Regionalny Menedżer Sprzedaży",
         text="zarządzanie 999 doradcami",
     )]
     result = audit_resume_claims(list(original), truth_index_with_employment, original)
@@ -654,12 +654,12 @@ def test_original_claim_cannot_bypass_unsupported_number(truth_index_with_employ
 def test_original_claim_does_not_bypass_duplicate_detection(truth_index_with_employment):
     original = [ResumeClaim(
         claim_id="orig-reg-6", section="activities", employment_id="dz-2",
-        company="ERGO Hestia", role="Regionalny Menedżer Sprzedaży",
+        company="Firma Alpha", role="Regionalny Menedżer Sprzedaży",
         text="zarządzanie sprzedażą",
     )]
     claims = [original[0], ResumeClaim(
         claim_id="reg-6b", section="activities", employment_id="dz-2",
-        company="ERGO Hestia", role="Regionalny Menedżer Sprzedaży",
+        company="Firma Alpha", role="Regionalny Menedżer Sprzedaży",
         text="ZARZĄDZANIE SPRZEDAŻĄ.",
     )]
     result = audit_resume_claims(claims, truth_index_with_employment, original)
@@ -672,8 +672,8 @@ def test_number_in_activity_fact_is_authorized_but_changed_text_reviewed(
 ):
     claim = ResumeClaim(
         claim_id="reg-7", section="activities", employment_id="dz-3",
-        company="Warta", role="Menedżer Dystrybucji",
-        text="poprawa wskaźnika z 36% do 96%",
+        company="Firma Beta", role="Menedżer Dystrybucji",
+        text="poprawa wskaźnika z 41% do 89%",
     )
     result = audit_resume_claims([claim], truth_index_with_employment)
     assert result.passed
@@ -687,7 +687,7 @@ def test_blocked_budget_rule_matches_adjectival_form(truth_index_with_employment
     ]
     claim = ResumeClaim(
         claim_id="reg-8", section="activities", employment_id="dz-3",
-        company="Warta", role="Menedżer Dystrybucji",
+        company="Firma Beta", role="Menedżer Dystrybucji",
         text="ogólna odpowiedzialność budżetowa",
     )
     result = audit_resume_claims([claim], truth_index_with_employment)
@@ -701,7 +701,7 @@ def test_exact_scoped_budget_fact_overrides_global_block(truth_index_with_employ
     ]
     claim = ResumeClaim(
         claim_id="reg-9", section="activities", employment_id="dz-2",
-        company="ERGO Hestia", role="Regionalny Menedżer Sprzedaży",
+        company="Firma Alpha", role="Regionalny Menedżer Sprzedaży",
         text="odpowiedzialność za budżet kontraktowy oraz ustalanie poziomów kontraktowych",
     )
     result = audit_resume_claims([claim], truth_index_with_employment)
@@ -717,7 +717,7 @@ def test_fact_requiring_approval_returns_review(truth_index_with_employment):
     truth_index_with_employment.approval_statuses = [fact.status]
     claim = ResumeClaim(
         claim_id="reg-10", section="numeric_result", employment_id="dz-2",
-        company="ERGO Hestia", role="Regionalny Menedżer Sprzedaży",
+        company="Firma Alpha", role="Regionalny Menedżer Sprzedaży",
         text=fact.original_text,
     )
     result = audit_resume_claims([claim], truth_index_with_employment)
@@ -732,7 +732,7 @@ def test_fact_blocked_by_status_cannot_pass(truth_index_with_employment):
     truth_index_with_employment.blocked_statuses = [fact.status]
     claim = ResumeClaim(
         claim_id="reg-11", section="numeric_result", employment_id="dz-2",
-        company="ERGO Hestia", role="Regionalny Menedżer Sprzedaży",
+        company="Firma Alpha", role="Regionalny Menedżer Sprzedaży",
         text=fact.original_text,
     )
     result = audit_resume_claims([claim], truth_index_with_employment)
@@ -745,7 +745,7 @@ def test_fact_disabled_for_cv_cannot_pass(truth_index_with_employment):
     fact.use_in_cv = False
     claim = ResumeClaim(
         claim_id="reg-12", section="numeric_result", employment_id="dz-2",
-        company="ERGO Hestia", role="Regionalny Menedżer Sprzedaży",
+        company="Firma Alpha", role="Regionalny Menedżer Sprzedaży",
         text=fact.original_text,
     )
     result = audit_resume_claims([claim], truth_index_with_employment)
@@ -756,8 +756,8 @@ def test_fact_disabled_for_cv_cannot_pass(truth_index_with_employment):
 def test_every_claim_gets_explicit_decision(truth_index_with_employment):
     claims = [ResumeClaim(
         claim_id="reg-13", section="activities", employment_id="dz-2",
-        company="ERGO Hestia", role="Regionalny Menedżer Sprzedaży",
-        text="116% wzrostu zysku przy wyniku 96%",
+        company="Firma Alpha", role="Regionalny Menedżer Sprzedaży",
+        text="123% wzrostu zysku przy wyniku 89%",
     )]
     result = audit_resume_claims(claims, truth_index_with_employment)
     assert len(result.violations) == len(claims)

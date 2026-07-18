@@ -661,7 +661,7 @@ async def complete(
     """
     import time
     start_time = time.time()
-    
+
     router, config = get_router(config)
     model_name = get_model_name(config)
 
@@ -681,7 +681,7 @@ async def complete(
             kwargs["temperature"] = temperature
         if config.reasoning_effort:
             kwargs["reasoning_effort"] = config.reasoning_effort
-        
+
         # Apply provider-specific parameters (e.g., qwen-specific settings for Ollama)
         _apply_provider_specific_params(kwargs, config.provider, model_name)
 
@@ -984,28 +984,28 @@ def _apply_provider_specific_params(
     For Ollama qwen models:
       - Disable thinking (think=false) to speed up responses
       - Increase context window (num_ctx=8192) for better reasoning
-    
+
     Other providers are unaffected.
     """
     if provider != "ollama":
         return
-    
+
     # Check if this is a qwen model
     if "qwen" not in model_name.lower():
         return
-    
+
     # Ollama-specific extention parameters (passed to /api/chat endpoint)
     if "options" not in kwargs:
         kwargs["options"] = {}
-    
+
     # Disable thinking to avoid timeout overhead
     kwargs["options"]["stop_reasoning"] = True  # Ollama parameter
     # Alternative: some Ollama versions use `think` directly
     kwargs["think"] = False
-    
+
     # Increase context window for better encoding of job/resume content
     kwargs["options"]["num_ctx"] = 8192
-    
+
     logging.debug(
         "Applied Ollama qwen-specific params: think=false, num_ctx=8192 for model=%s",
         model_name,
@@ -1132,10 +1132,10 @@ async def complete_json(
     """
     import time
     start_time = time.time()
-    
+
     router, config = get_router(config)
     model_name = get_model_name(config)
-    
+
     # Log operation start with model/provider details
     logging.info(
         "LLM completion_json START: model=%s, provider=%s, schema_type=%s, max_tokens=%d",
@@ -1174,7 +1174,7 @@ async def complete_json(
                 kwargs["temperature"] = retry_temp
             if config.reasoning_effort:
                 kwargs["reasoning_effort"] = config.reasoning_effort
-            
+
             # Apply provider-specific parameters (e.g., qwen-specific settings for Ollama)
             _apply_provider_specific_params(kwargs, config.provider, model_name)
 

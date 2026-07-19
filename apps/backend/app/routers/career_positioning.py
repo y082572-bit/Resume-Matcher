@@ -4,6 +4,10 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 from app.database import db
 from app.schemas.career_positioning import CareerPositioningResponse
+from app.schemas.cv_transformation_approval import (
+    CVTransformationPlanApproval,
+    CVTransformationPlanApprovalRequest,
+)
 from app.schemas.cv_transformation_plan import CVTransformationPlan
 from app.services.truth_library_loader import (
     get_truth_library,
@@ -13,6 +17,10 @@ from app.services.truth_library_loader import (
 )
 from app.services.career_positioning_report import build_career_positioning_report
 from app.services.cv_transformation_plan import build_cv_transformation_plan
+from app.services.cv_transformation_approval import (
+    ApprovalValidationError,
+    validate_approval_request,
+)
 
 import logging
 
@@ -81,6 +89,15 @@ async def get_career_positioning(job_id: str) -> CareerPositioningResponse:
 )
 async def get_cv_transformation_plan(job_id: str, resume_id: str) -> CVTransformationPlan:
     """Preview a deterministic plan without LLM calls, persistence, or metrics."""
+    plan, _, _ = await _build_current_transformation_plan(job_id, resume_id)
+    return plan
+
+
+async def _build_current_transformation_plan(
+    job_id: str, resume_id: str
+) -> tuple[CVTransformationPlan, dict, dict]:
+    """Regenerate the authoritative current plan for preview or approval."""
+
     job = await db.get_job(job_id)
     if not job:
         raise HTTPException(
@@ -117,7 +134,7 @@ async def get_cv_transformation_plan(job_id: str, resume_id: str) -> CVTransform
     truth_library = _load_truth_library_or_http_error()
     now = datetime.now(timezone.utc)
     career_report = build_career_positioning_report(job, truth_library, now)
-    return build_cv_transformation_plan(
+    plan = build_cv_transformation_plan(
         resume_id=resume_id,
         job_id=job_id,
         resume=resume,
@@ -126,3 +143,76 @@ async def get_cv_transformation_plan(job_id: str, resume_id: str) -> CVTransform
         career_report=career_report,
         now=now,
     )
+    return plan, resume, job
+
+
+@router.post(
+    "/{job_id}/resumes/{resume_id}/transformation-plan/approval",
+    response_model=CVTransformationPlanApproval,
+)
+async def save_cv_transformation_plan_approval(
+    job_id: str,
+    resume_id: str,
+    request: CVTransformationPlanApprovalRequest,
+) -> CVTransformationPlanApproval:
+    """Persist explicit decisions for the exact current deterministic plan."""
+
+    plan, _, _ = await _build_current_transformation_plan(job_id, resume_id)
+    if request.plan_fingerprint != plan.plan_fingerprint:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "STALE_TRANSFORMATION_PLAN",
+                "message": "Resume, Job, or source data changed; refresh the plan.",
+            },
+        )
+    try:
+        decisions, status = validate_approval_request(plan, request)
+    except ApprovalValidationError as error:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": error.code, "message": error.message},
+        ) from error
+
+    row, _ = await db.save_transformation_plan_approval(
+        job_id=job_id,
+        resume_id=resume_id,
+        plan_version=plan.plan_version,
+        plan_fingerprint=plan.plan_fingerprint,
+        status=status,
+        decisions=[item.model_dump() for item in decisions],
+        guardrails_acknowledged=request.guardrails_acknowledged,
+    )
+    return CVTransformationPlanApproval.model_validate(row)
+
+
+@router.get(
+    "/{job_id}/resumes/{resume_id}/transformation-plan/approval",
+    response_model=CVTransformationPlanApproval,
+)
+async def get_cv_transformation_plan_approval(
+    job_id: str, resume_id: str
+) -> CVTransformationPlanApproval:
+    """Return the approval for the current plan or expose the latest as superseded."""
+
+    plan, _, _ = await _build_current_transformation_plan(job_id, resume_id)
+    row = await db.get_transformation_plan_approval(
+        job_id=job_id,
+        resume_id=resume_id,
+        plan_fingerprint=plan.plan_fingerprint,
+    )
+    if row is None:
+        row = await db.get_transformation_plan_approval(
+            job_id=job_id,
+            resume_id=resume_id,
+        )
+        if row is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "code": "TRANSFORMATION_PLAN_APPROVAL_NOT_FOUND",
+                    "message": "Transformation plan approval not found",
+                },
+            )
+        row = {**row, "status": "SUPERSEDED"}
+    return CVTransformationPlanApproval.model_validate(row)

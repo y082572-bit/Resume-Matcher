@@ -132,6 +132,36 @@ class Application(Base):
     updated_at: Mapped[str] = mapped_column(String, default=_utcnow_iso)
 
 
+class CVTransformationPlanApproval(Base):
+    """Auditable user decisions for one exact public transformation plan."""
+
+    __tablename__ = "cv_transformation_plan_approvals"
+
+    approval_id: Mapped[str] = mapped_column(String, primary_key=True)
+    plan_version: Mapped[str] = mapped_column(String, nullable=False)
+    plan_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    resume_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    decisions: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    guardrails_acknowledged: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[str] = mapped_column(String, default=_utcnow_iso, nullable=False)
+    updated_at: Mapped[str] = mapped_column(String, default=_utcnow_iso, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "job_id",
+            "resume_id",
+            "plan_fingerprint",
+            name="uq_transformation_plan_approval_scope",
+        ),
+        CheckConstraint(
+            "status IN ('DRAFT', 'APPROVED', 'REQUIRES_REVIEW', 'SUPERSEDED')",
+            name="ck_transformation_plan_approval_status",
+        ),
+    )
+
+
 
 class ApiKey(Base):
     """An encrypted LLM provider API key.
@@ -169,7 +199,7 @@ class MetricEvent(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "event_type IN ('BASELINE', 'ENTITY_CREATED', 'ENTITY_DELETED', 'RESUME_GENERATED', 'JOB_ANALYZED', 'APPLICATION_STATUS_CHANGED')",
+            "event_type IN ('BASELINE', 'ENTITY_CREATED', 'ENTITY_DELETED', 'RESUME_GENERATED', 'JOB_ANALYZED', 'APPLICATION_STATUS_CHANGED', 'TRANSFORMATION_PLAN_DECIDED')",
             name="ck_metric_events_event_type"
         ),
         CheckConstraint(

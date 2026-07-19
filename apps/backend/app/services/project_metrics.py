@@ -23,6 +23,7 @@ class MetricEventType(str, Enum):
     RESUME_GENERATED = "RESUME_GENERATED"
     JOB_ANALYZED = "JOB_ANALYZED"
     APPLICATION_STATUS_CHANGED = "APPLICATION_STATUS_CHANGED"
+    TRANSFORMATION_PLAN_DECIDED = "TRANSFORMATION_PLAN_DECIDED"
 
 
 class MetricEntityType(str, Enum):
@@ -162,6 +163,14 @@ class MetricEventInput:
                 raise ValueError("JOB_ANALYZED is only allowed for JOB")
             if self.from_state is not None or self.to_state is not None:
                 raise ValueError("JOB_ANALYZED cannot have from_state or to_state")
+
+        elif self.event_type == MetricEventType.TRANSFORMATION_PLAN_DECIDED:
+            if self.entity_type != MetricEntityType.JOB:
+                raise ValueError("TRANSFORMATION_PLAN_DECIDED is only allowed for JOB")
+            if self.from_state is not None or self.to_state is not None:
+                raise ValueError(
+                    "TRANSFORMATION_PLAN_DECIDED cannot have from_state or to_state"
+                )
 
         elif self.event_type == MetricEventType.APPLICATION_STATUS_CHANGED:
             if self.entity_type != MetricEntityType.APPLICATION:

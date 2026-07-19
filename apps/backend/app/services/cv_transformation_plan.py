@@ -7,6 +7,7 @@ and never exposes Truth Library identifiers or raw Truth content.
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -585,6 +586,65 @@ def _job_requirements_count(job_content: str) -> int:
     return len(lines) if lines else (1 if job_content.strip() else 0)
 
 
+def _sha256_canonical(value: Any) -> str:
+    canonical = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _canonical_source_value(value: Any) -> Any:
+    """Normalize source collections whose ordering does not change plan semantics."""
+
+    if isinstance(value, dict):
+        return {
+            key: _canonical_source_value(item)
+            for key, item in sorted(value.items())
+        }
+    if isinstance(value, list):
+        normalized = [_canonical_source_value(item) for item in value]
+        return sorted(normalized, key=_canonical)
+    return value
+
+
+def compute_plan_fingerprint(
+    plan: CVTransformationPlan,
+    *,
+    resume: dict[str, Any] | None = None,
+    job: dict[str, Any] | None = None,
+    truth_library: dict[str, Any] | None = None,
+) -> str:
+    """Hash the public plan and opaque source revisions, excluding generated_at."""
+
+    public_plan = plan.model_dump(
+        mode="json",
+        exclude={"generated_at", "plan_fingerprint"},
+    )
+    source_revisions = {
+        "resume": (
+            _sha256_canonical(_canonical_source_value(resume))
+            if resume is not None
+            else None
+        ),
+        "job": (
+            _sha256_canonical(_canonical_source_value(job))
+            if job is not None
+            else None
+        ),
+        "truth_library": (
+            _sha256_canonical(_canonical_source_value(truth_library))
+            if truth_library is not None
+            else None
+        ),
+    }
+    return _sha256_canonical(
+        {"public_plan": public_plan, "source_revisions": source_revisions}
+    )
+
+
 def build_cv_transformation_plan(
     *,
     resume_id: str,
@@ -648,7 +708,8 @@ def build_cv_transformation_plan(
         or strategy
         in {"REVIEW_REQUIRED", "CONTROLLED_ELEVATION", "EXECUTIVE_ENTERPRISE"}
     )
-    return CVTransformationPlan(
+    plan = CVTransformationPlan(
+        plan_fingerprint="0" * 64,
         resume_id=resume_id,
         job_id=job_id,
         generated_at=now,
@@ -669,4 +730,14 @@ def build_cv_transformation_plan(
             resume_items_count=len(summary + experience + achievements + tools),
             job_requirements_count=_job_requirements_count(job_content),
         ),
+    )
+    return plan.model_copy(
+        update={
+            "plan_fingerprint": compute_plan_fingerprint(
+                plan,
+                resume=resume,
+                job=job,
+                truth_library=truth_library,
+            )
+        }
     )

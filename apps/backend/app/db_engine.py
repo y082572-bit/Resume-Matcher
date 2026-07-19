@@ -13,7 +13,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-from app.models import Base
+from app.models import Base, MetricEvent
 
 __all__ = ["Base", "make_async_engine", "make_sync_engine", "init_models_sync"]
 
@@ -66,6 +66,40 @@ def init_models_sync(engine: Engine) -> None:
     # ``create_all`` does not ALTER existing SQLite tables. Keep this additive
     # migration idempotent so older local databases can load resumes safely.
     with engine.begin() as conn:
+        metric_sql_row = conn.exec_driver_sql(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'metric_events'"
+        ).first()
+        metric_sql = metric_sql_row[0] if metric_sql_row else ""
+        if metric_sql and "TRANSFORMATION_PLAN_DECIDED" not in metric_sql:
+            conn.exec_driver_sql("DROP TRIGGER IF EXISTS metric_events_no_update")
+            conn.exec_driver_sql("DROP TRIGGER IF EXISTS metric_events_no_delete")
+            conn.exec_driver_sql(
+                "ALTER TABLE metric_events RENAME TO metric_events_stage10b_old"
+            )
+            for index_name in (
+                "ix_metric_events_event_type",
+                "ix_metric_events_entity_type",
+                "ix_metric_events_entity_id",
+                "ix_metric_events_lifecycle_id",
+            ):
+                conn.exec_driver_sql(f"DROP INDEX IF EXISTS {index_name}")
+            MetricEvent.__table__.create(conn)
+            conn.exec_driver_sql(
+                """
+                INSERT INTO metric_events (
+                    sequence_id, event_id, operation_key, event_type, entity_type,
+                    entity_id, lifecycle_id, from_state, to_state, occurred_at,
+                    recorded_at, source, metadata_json
+                )
+                SELECT
+                    sequence_id, event_id, operation_key, event_type, entity_type,
+                    entity_id, lifecycle_id, from_state, to_state, occurred_at,
+                    recorded_at, source, metadata_json
+                FROM metric_events_stage10b_old
+                """
+            )
+            conn.exec_driver_sql("DROP TABLE metric_events_stage10b_old")
+
         columns = conn.exec_driver_sql("PRAGMA table_info(resumes)").mappings().all()
         if columns and "interview_prep" not in {column["name"] for column in columns}:
             conn.exec_driver_sql("ALTER TABLE resumes ADD COLUMN interview_prep TEXT")

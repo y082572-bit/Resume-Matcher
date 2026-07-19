@@ -75,3 +75,10 @@ export {
   parseCVTransformationPlan,
   CVTransformationPlanApiError,
 } from './cv-transformation-plan';
+
+export {
+  fetchCVTransformationPlanApproval,
+  saveCVTransformationPlanApproval,
+  parseCVTransformationPlanApproval,
+  CVTransformationPlanApprovalApiError,
+} from './cv-transformation-approval';

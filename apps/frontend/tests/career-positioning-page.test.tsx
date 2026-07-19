@@ -793,4 +793,15 @@ describe('CareerPositioningPage Component', () => {
       expect(screen.getByText('careerPositioning.refreshError')).toBeDefined();
     });
   });
+
+  it('46. navigates to the transformation plan review', async () => {
+    vi.mocked(cpApi.fetchResumePositioningContext).mockResolvedValue(mockResumeResponseData);
+    vi.mocked(cpApi.fetchResumeJobContext).mockResolvedValue({ job_id: 'job-123' });
+    vi.mocked(cpApi.fetchCareerPositioning).mockResolvedValue(mockValidData);
+
+    render(<CareerPositioningPage />);
+    await screen.findByText('Regional Manager');
+    fireEvent.click(screen.getByRole('button', { name: 'Przejrzyj plan CV' }));
+    expect(mockPush).toHaveBeenCalledWith('/resumes/resume-123/positioning/plan');
+  });
 });

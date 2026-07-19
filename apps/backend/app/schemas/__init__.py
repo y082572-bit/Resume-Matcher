@@ -88,6 +88,11 @@ from app.schemas.cv_transformation_plan import (
     ProhibitedClaim,
     TransformationSourceSummary,
 )
+from app.schemas.cv_transformation_approval import (
+    CVTransformationPlanApproval,
+    CVTransformationPlanApprovalRequest,
+    TransformationPlanDecision,
+)
 
 __all__ = [
     "PersonalInfo",
@@ -96,6 +101,9 @@ __all__ = [
     "EvidencePermission",
     "ProhibitedClaim",
     "TransformationSourceSummary",
+    "CVTransformationPlanApproval",
+    "CVTransformationPlanApprovalRequest",
+    "TransformationPlanDecision",
     "Experience",
     "Education",
     "Project",

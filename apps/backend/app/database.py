@@ -19,13 +19,22 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
 from app.db_engine import init_models_sync, make_async_engine, make_sync_engine
-from app.models import ApiKey, Application, Improvement, Job, Resume, MetricEvent
+from app.models import (
+    ApiKey,
+    Application,
+    CVTransformationPlanApproval,
+    Improvement,
+    Job,
+    MetricEvent,
+    Resume,
+)
 from app.services.project_metrics import (
     MetricEventType,
     MetricEntityType,
@@ -190,6 +199,23 @@ class Database:
             "applied_at": row.applied_at,
             "notes": row.notes,
             "position": row.position,
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        }
+
+    @staticmethod
+    def _transformation_approval_to_dict(
+        row: CVTransformationPlanApproval,
+    ) -> dict[str, Any]:
+        return {
+            "approval_id": row.approval_id,
+            "plan_version": row.plan_version,
+            "plan_fingerprint": row.plan_fingerprint,
+            "resume_id": row.resume_id,
+            "job_id": row.job_id,
+            "status": row.status,
+            "decisions": row.decisions,
+            "guardrails_acknowledged": row.guardrails_acknowledged,
             "created_at": row.created_at,
             "updated_at": row.updated_at,
         }
@@ -656,6 +682,140 @@ class Database:
             row = result.scalars().first()
             return self._improvement_to_dict(row) if row else None
 
+    # -- CV transformation-plan approval operations ------------------------
+
+    async def get_transformation_plan_approval(
+        self,
+        *,
+        job_id: str,
+        resume_id: str,
+        plan_fingerprint: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Return an exact approval, or the most recently updated scoped row."""
+
+        async with self._session() as session:
+            stmt = select(CVTransformationPlanApproval).where(
+                CVTransformationPlanApproval.job_id == job_id,
+                CVTransformationPlanApproval.resume_id == resume_id,
+            )
+            if plan_fingerprint is not None:
+                stmt = stmt.where(
+                    CVTransformationPlanApproval.plan_fingerprint == plan_fingerprint
+                )
+            stmt = stmt.order_by(CVTransformationPlanApproval.updated_at.desc())
+            row = (await session.execute(stmt)).scalars().first()
+            return self._transformation_approval_to_dict(row) if row else None
+
+    async def save_transformation_plan_approval(
+        self,
+        *,
+        job_id: str,
+        resume_id: str,
+        plan_version: str,
+        plan_fingerprint: str,
+        status: str,
+        decisions: list[dict[str, str]],
+        guardrails_acknowledged: bool,
+    ) -> tuple[dict[str, Any], bool]:
+        """Upsert one plan revision and record its first explicit decision once."""
+
+        now = _now()
+        async with self._session() as session:
+            approval_id = str(uuid4())
+            inserted_id = await session.scalar(
+                sqlite_insert(CVTransformationPlanApproval)
+                .values(
+                    approval_id=approval_id,
+                    plan_version=plan_version,
+                    plan_fingerprint=plan_fingerprint,
+                    resume_id=resume_id,
+                    job_id=job_id,
+                    status=status,
+                    decisions=decisions,
+                    guardrails_acknowledged=guardrails_acknowledged,
+                    created_at=now,
+                    updated_at=now,
+                )
+                .on_conflict_do_nothing(
+                    index_elements=["job_id", "resume_id", "plan_fingerprint"]
+                )
+                .returning(CVTransformationPlanApproval.approval_id)
+            )
+            created = inserted_id is not None
+            row = (
+                await session.execute(
+                    select(CVTransformationPlanApproval).where(
+                        CVTransformationPlanApproval.job_id == job_id,
+                        CVTransformationPlanApproval.resume_id == resume_id,
+                        CVTransformationPlanApproval.plan_fingerprint
+                        == plan_fingerprint,
+                    )
+                )
+            ).scalars().first()
+            if row is None:
+                raise RuntimeError("Approval upsert did not return its persisted row")
+
+            changed = False
+            if created:
+                older = (
+                    await session.execute(
+                        select(CVTransformationPlanApproval).where(
+                            CVTransformationPlanApproval.job_id == job_id,
+                            CVTransformationPlanApproval.resume_id == resume_id,
+                            CVTransformationPlanApproval.plan_fingerprint
+                            != plan_fingerprint,
+                            CVTransformationPlanApproval.status != "SUPERSEDED",
+                        )
+                    )
+                ).scalars().all()
+                for previous in older:
+                    previous.status = "SUPERSEDED"
+                    previous.updated_at = now
+            else:
+                changed = (
+                    row.status != status
+                    or row.decisions != decisions
+                    or row.guardrails_acknowledged != guardrails_acknowledged
+                )
+                if changed:
+                    row.status = status
+                    row.decisions = decisions
+                    row.guardrails_acknowledged = guardrails_acknowledged
+                    row.updated_at = now
+
+            metric_recorded = await self._record_transformation_decision_metric(session, row)
+            if created or changed or metric_recorded:
+                await session.commit()
+            return self._transformation_approval_to_dict(row), created
+
+    async def _record_transformation_decision_metric(
+        self,
+        session: AsyncSession,
+        approval: CVTransformationPlanApproval,
+        *,
+        job_row: Job | None = None,
+    ) -> bool:
+        """Record exactly one event once at least one explicit decision exists."""
+
+        if not approval.decisions:
+            return False
+        job_row = job_row or await session.get(Job, approval.job_id)
+        if job_row is None:
+            raise ValueError("Job not found")
+        result = await record_metric_event(
+            session,
+            MetricEventInput(
+                event_id=str(uuid4()),
+                operation_key=f"transformation_plan_decision:{approval.approval_id}",
+                event_type=MetricEventType.TRANSFORMATION_PLAN_DECIDED,
+                entity_type=MetricEntityType.JOB,
+                entity_id=approval.job_id,
+                lifecycle_id=job_row.lifecycle_token,
+                source=MetricEventSource.USER,
+            ),
+        )
+        return result.status == RecordEventStatus.RECORDED
+
     # -- Application (tracker) operations -----------------------------------
 
     async def _next_position(self, session: AsyncSession, status: str) -> int:
@@ -1115,6 +1275,7 @@ class Database:
         reset never wiped the user's stored credentials.
         """
         async with self._session() as session:
+            await session.execute(delete(CVTransformationPlanApproval))
             await session.execute(delete(Application))
             await session.execute(delete(Improvement))
             await session.execute(delete(Job))

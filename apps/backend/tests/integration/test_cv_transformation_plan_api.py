@@ -173,7 +173,7 @@ async def test_06_response_contains_complete_contract(api_client, isolated_db, l
     install_truth(monkeypatch)
     data = (await api_client.get(endpoint(linked_records))).json()
     assert set(data) == {
-        "plan_version", "resume_id", "job_id", "generated_at", "detected_job_level",
+        "plan_version", "plan_fingerprint", "resume_id", "job_id", "generated_at", "detected_job_level",
         "candidate_profile_level", "positioning_strategy", "requires_human_review",
         "summary_plan", "experience_plan", "competencies_plan", "achievements_plan",
         "tools_plan", "evidence_permissions", "prohibited_claims", "limitations",

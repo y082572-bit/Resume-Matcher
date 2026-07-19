@@ -116,6 +116,7 @@ class CVTransformationPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     plan_version: Literal["1.1"] = "1.1"
+    plan_fingerprint: str = Field(..., pattern=r"^[0-9a-f]{64}$")
     resume_id: str = Field(..., min_length=1)
     job_id: str = Field(..., min_length=1)
     generated_at: datetime

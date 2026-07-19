@@ -72,6 +72,7 @@ export interface TransformationSourceSummary {
 
 export interface CVTransformationPlan {
   plan_version: '1.1';
+  plan_fingerprint: string;
   resume_id: string;
   job_id: string;
   generated_at: string;

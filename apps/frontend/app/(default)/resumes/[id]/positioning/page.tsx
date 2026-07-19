@@ -29,6 +29,7 @@ import {
   Sparkles,
   Info,
   RefreshCw,
+  ClipboardCheck,
 } from 'lucide-react';
 
 const FIT_LEVEL_STYLES: Record<FitLevel, { color: string; bg: string; text: string }> = {
@@ -287,6 +288,13 @@ export default function CareerPositioningPage() {
               >
                 <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
                 {refreshing ? t('careerPositioning.loading') : t('careerPositioning.refresh')}
+              </Button>
+              <Button
+                onClick={() => router.push(`/resumes/${resumeId}/positioning/plan`)}
+                className="gap-2 mb-2 font-mono uppercase"
+              >
+                <ClipboardCheck className="w-4 h-4" />
+                Przejrzyj plan CV
               </Button>
             </div>
             <h1 className="font-serif text-3xl md:text-4xl font-bold uppercase tracking-tight">

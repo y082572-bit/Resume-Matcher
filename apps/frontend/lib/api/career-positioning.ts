@@ -758,7 +758,7 @@ export async function fetchCareerPositioning(
 export async function fetchResumeJobContext(
   resumeId: string,
   options?: { signal?: AbortSignal }
-): Promise<{ job_id: string }> {
+): Promise<{ job_id: string; job_title?: string }> {
   let resp: Response;
   try {
     resp = await apiFetch(`/resumes/${resumeId}/job-description`, { signal: options?.signal });
@@ -799,7 +799,14 @@ export async function fetchResumeJobContext(
     );
   }
 
-  return { job_id: data.job_id };
+  const jobTitle =
+    typeof data.content === 'string'
+      ? data.content
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .find(Boolean)
+      : undefined;
+  return { job_id: data.job_id, ...(jobTitle ? { job_title: jobTitle } : {}) };
 }
 
 export async function fetchResumePositioningContext(

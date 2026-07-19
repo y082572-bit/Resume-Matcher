@@ -11,6 +11,7 @@ vi.mock('@/lib/api/client', () => ({ apiFetch: vi.fn() }));
 
 const payload: CVTransformationPlan = {
   plan_version: '1.1',
+  plan_fingerprint: 'a'.repeat(64),
   resume_id: 'resume-1',
   job_id: 'job-1',
   generated_at: '2026-07-18T12:00:00Z',

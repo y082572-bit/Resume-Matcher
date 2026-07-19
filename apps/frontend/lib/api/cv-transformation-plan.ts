@@ -26,6 +26,7 @@ export class CVTransformationPlanApiError extends Error {
 
 const ROOT_KEYS = new Set([
   'plan_version',
+  'plan_fingerprint',
   'resume_id',
   'job_id',
   'generated_at',
@@ -347,6 +348,13 @@ export function parseCVTransformationPlan(value: unknown): CVTransformationPlan 
   }
   return {
     plan_version: '1.1',
+    plan_fingerprint: (() => {
+      const fingerprint = string(root.plan_fingerprint, 'plan_fingerprint');
+      if (!/^[0-9a-f]{64}$/.test(fingerprint)) {
+        throw new Error('plan_fingerprint must be a backend SHA-256 value.');
+      }
+      return fingerprint;
+    })(),
     resume_id: string(root.resume_id, 'resume_id'),
     job_id: string(root.job_id, 'job_id'),
     generated_at: generatedAt,

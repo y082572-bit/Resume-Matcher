@@ -463,4 +463,31 @@ describe('TransformationPlanReviewPage', () => {
     ).toBe(true);
     expect((screen.getByRole('checkbox') as HTMLInputElement).disabled).toBe(false);
   });
+
+  it('34. shows Stage 10C navigation only for APPROVED', async () => {
+    vi.mocked(approvalApi.fetchCVTransformationPlanApproval).mockResolvedValue(
+      approval('APPROVED')
+    );
+    await renderLoaded();
+    fireEvent.click(screen.getByRole('button', { name: 'Generuj kontrolowany draft' }));
+    expect(push).toHaveBeenCalledWith('/resumes/resume-example/positioning/plan/generation');
+  });
+
+  it.each(['DRAFT', 'REQUIRES_REVIEW'] as const)(
+    '35-36. hides Stage 10C navigation for %s',
+    async (status) => {
+      vi.mocked(approvalApi.fetchCVTransformationPlanApproval).mockResolvedValue(approval(status));
+      await renderLoaded();
+      expect(screen.queryByRole('button', { name: 'Generuj kontrolowany draft' })).toBeNull();
+    }
+  );
+
+  it('37. hides Stage 10C navigation for SUPERSEDED', async () => {
+    vi.mocked(approvalApi.fetchCVTransformationPlanApproval).mockResolvedValue({
+      ...approval('SUPERSEDED'),
+      plan_fingerprint: 'b'.repeat(64),
+    });
+    await renderLoaded();
+    expect(screen.queryByRole('button', { name: 'Generuj kontrolowany draft' })).toBeNull();
+  });
 });

@@ -61,6 +61,10 @@ class LLMConfig(BaseModel):
     reasoning_effort: Literal["minimal", "low", "medium", "high"] | None = None
 
 
+class LLMResponseContentError(ValueError):
+    """The provider responded, but its content was not the required JSON contract."""
+
+
 def _normalize_api_base(provider: str, api_base: str | None) -> str | None:
     """Normalize api_base for LiteLLM provider-specific expectations.
 
@@ -821,7 +825,7 @@ def _appears_truncated(data: dict, schema_type: str = "resume") -> bool:
         data: Parsed JSON dict.
         schema_type: Expected schema — "resume" (full resume), "enrichment"
             (analyze output), "diff" (diff changes), "keywords", or
-            "interview_prep".
+            "interview_prep", or "cv_transformation_generation".
             Determines which fields are checked for truncation.
     """
     if not isinstance(data, dict):
@@ -1026,7 +1030,7 @@ def _strip_thinking_tags(content: str) -> str:
     return stripped.strip()
 
 
-def _extract_json(content: str, _depth: int = 0) -> str:
+def _extract_json(content: str, _depth: int = 0, *, redact_content: bool = False) -> str:
     """Extract JSON from LLM response, handling various formats.
 
     LLM-001: Improved to detect and reject likely truncated JSON.
@@ -1101,14 +1105,37 @@ def _extract_json(content: str, _depth: int = 0) -> str:
     start_idx = content.find("{")
     if start_idx > 0:
         # Only recurse if { is found after position 0 to avoid infinite recursion
-        return _extract_json(content[start_idx:], _depth + 1)
+        return _extract_json(
+            content[start_idx:], _depth + 1, redact_content=redact_content
+        )
 
     # LLM-007: Log unrecognized format for debugging
+    if redact_content:
+        logging.error("Could not extract JSON from privacy-sensitive response format")
+        raise ValueError("No JSON found in privacy-sensitive response")
     logging.error(
         "Could not extract JSON from response format. Content preview: %s",
         content[:200] if content else "<empty>",
     )
     raise ValueError(f"No JSON found in response: {original[:200]}")
+
+
+def _extract_strict_json_object(content: str) -> str:
+    """Accept exactly one bare JSON object, optionally after thinking-tag removal."""
+
+    if len(content) > MAX_JSON_CONTENT_SIZE:
+        raise ValueError(f"Content too large for JSON extraction: {len(content)} bytes")
+    if "<think>" in content:
+        content = _strip_thinking_tags(content)
+    content = content.strip()
+    if not content.startswith("{"):
+        raise ValueError("Strict JSON response must start with an object")
+    result, end = json.JSONDecoder().raw_decode(content)
+    if not isinstance(result, dict):
+        raise ValueError("Strict JSON response must be an object")
+    if content[end:].strip():
+        raise ValueError("Strict JSON response contains trailing content")
+    return content[:end]
 
 
 async def complete_json(
@@ -1118,6 +1145,7 @@ async def complete_json(
     max_tokens: int = 4096,
     retries: int = 2,
     schema_type: str = "resume",
+    strict_json_envelope: bool = False,
 ) -> dict[str, Any]:
     """Make a completion request expecting JSON response.
 
@@ -1127,8 +1155,11 @@ async def complete_json(
 
     Args:
         schema_type: Expected schema — "resume", "enrichment", "diff",
-            "keywords", or "interview_prep". Passed to _appears_truncated for
+            "keywords", "interview_prep", or "cv_transformation_generation".
+            Passed to _appears_truncated for
             context-aware truncation detection and used to tailor retry hints.
+        strict_json_envelope: Require one bare JSON object with no markdown,
+            prose, HTML, or a second JSON value around it.
     """
     import time
     start_time = time.time()
@@ -1190,11 +1221,22 @@ async def complete_json(
             if not content:
                 raise ValueError("Empty response from LLM")
 
-            logging.debug(
-                f"LLM response (attempt {attempt + 1}): {content[:300]}")
+            privacy_sensitive = schema_type == "cv_transformation_generation"
+            if privacy_sensitive:
+                logging.debug(
+                    "LLM privacy-sensitive response received (attempt %d)", attempt + 1
+                )
+            else:
+                logging.debug(
+                    f"LLM response (attempt {attempt + 1}): {content[:300]}"
+                )
 
             # Extract and parse JSON
-            json_str = _extract_json(content)
+            json_str = (
+                _extract_strict_json_object(content)
+                if strict_json_envelope
+                else _extract_json(content, redact_content=privacy_sensitive)
+            )
             result = json.loads(json_str)
 
             # LLM-001: Check if parsed result appears truncated
@@ -1256,15 +1298,21 @@ async def complete_json(
                     + "\n\nIMPORTANT: Output ONLY a valid JSON object. Start with { and end with }."
                 )
                 continue
-            raise ValueError(
+            raise LLMResponseContentError(
                 f"Failed to parse JSON after {retries + 1} attempts: {e}")
 
         except ValueError as e:
             # Content quality — empty response, JSON extraction failure
-            logging.warning(f"Content extraction failed (attempt {attempt + 1}): {e}")
+            if schema_type == "cv_transformation_generation":
+                logging.warning(
+                    "Privacy-sensitive content extraction failed (attempt %d)",
+                    attempt + 1,
+                )
+            else:
+                logging.warning(f"Content extraction failed (attempt {attempt + 1}): {e}")
             if attempt < retries:
                 continue
-            raise
+            raise LLMResponseContentError(str(e)) from e
 
         except litellm.BadRequestError as e:
             # JSON-012b: some OpenAI-compatible servers (e.g. LM Studio) report
@@ -1295,4 +1343,4 @@ async def complete_json(
             # retry is attempted here.
             raise
 
-    raise ValueError(f"Failed after {retries + 1} attempts")
+    raise LLMResponseContentError(f"Failed after {retries + 1} attempts")

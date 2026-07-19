@@ -23,6 +23,7 @@ from app.schemas.cv_transformation_plan import (
     TransformationSourceSummary,
 )
 from app.services.career_positioning_report import is_entry_allowed
+from app.services.cv_claim_boundaries import classify_approved_fact
 from app.services.truth_index import normalize_truth_text
 
 
@@ -113,6 +114,51 @@ class _ItemCandidate:
     evidence_strength: str
     human_review_required: bool = False
     permissions: list[_PermissionSpec] = field(default_factory=list)
+    source_kind: str = "resume"
+    source_payload: Any = None
+    immutable_fields: tuple[str, ...] = ()
+    source_position: int | None = None
+    parent_experience_position: int | None = None
+    description_position: int | None = None
+    parent_source_fingerprint: str | None = None
+    bullet_bindings: tuple["ExperienceBulletBinding", ...] = ()
+
+
+@dataclass(frozen=True)
+class ExperienceBulletBinding:
+    """Private, exact fact boundary for one EXPERIENCE description bullet."""
+
+    index: int
+    source_text: str
+    source_fingerprint: str
+    allowed_claim_codes: tuple[str, ...]
+    allowed_operation: str
+
+
+@dataclass(frozen=True)
+class TransformationPlanBinding:
+    """Private source material for one public plan item."""
+
+    source_reference: str
+    section: str
+    namespace: str
+    source_kind: str
+    source_payload: Any
+    source_fingerprint: str
+    immutable_fields: tuple[str, ...]
+    allowed_claim_codes: tuple[str, ...]
+    allowed_operation: str
+    source_position: int | None = None
+    parent_experience_position: int | None = None
+    description_position: int | None = None
+    parent_source_fingerprint: str | None = None
+    bullet_bindings: tuple[ExperienceBulletBinding, ...] = ()
+
+
+@dataclass(frozen=True)
+class CVTransformationPlanBundle:
+    plan: CVTransformationPlan
+    bindings: tuple[TransformationPlanBinding, ...]
 
 
 def _tokens(value: str) -> set[str]:
@@ -230,12 +276,14 @@ def _scope_matches(experience: dict[str, Any], scope: _EmploymentScope) -> bool:
     start_year, end_year = _resume_year_bounds(experience.get("years"))
     comparisons = []
     if role and scope.role:
-        comparisons.append(role == scope.role)
+        if role != scope.role:
+            return False
+        comparisons.append(True)
     if start_year and end_year and scope.start_year and scope.end_year:
-        comparisons.append(
-            start_year == scope.start_year and end_year == scope.end_year
-        )
-    return bool(comparisons) and any(comparisons)
+        if start_year != scope.start_year or end_year != scope.end_year:
+            return False
+        comparisons.append(True)
+    return bool(comparisons)
 
 
 def _matching_scoped_facts(
@@ -256,52 +304,6 @@ def _matching_scoped_facts(
     return tuple(sorted(matches, key=lambda fact: (fact.fact_type, fact.normalized_text)))
 
 
-def _classify_responsibility_fact(fact: _ApprovedFact) -> tuple[str, ...]:
-    text = fact.normalized_text
-    codes: set[str] = set()
-    if re.search(r"\b(?:p\s*&\s*l|pnl|profit\s+and\s+loss)\b", text):
-        codes.add("PNL_WITHOUT_EVIDENCE")
-    if re.search(
-        r"\b(?:odpowiedzialno(?:ść|sc)|zarządzanie|zarzadzanie|managed|ownership)"
-        r"\s+(?:za\s+)?(?:budżet(?:em|u)?|budzet(?:em|u)?|budget)\b",
-        text,
-    ):
-        codes.add("BUDGET_WITHOUT_EVIDENCE")
-    if re.search(r"\b(?:board|zarząd(?:em|u|owi)?|zarzad(?:em|u|owi)?|c[- ]level)\b", text):
-        codes.add("BOARD_WITHOUT_EVIDENCE")
-    managing_managers = bool(
-        re.search(
-            r"\b(?:zarządzanie|zarzadzanie|kierowanie)\s+(?:menedżerami|menedzerami|managerami)\b"
-            r"|\bmanaging\s+managers\b",
-            text,
-        )
-    )
-    if managing_managers:
-        codes.add("MANAGING_MANAGERS_WITHOUT_EVIDENCE")
-    elif re.search(
-        r"\b(?:zarządzanie|zarzadzanie|kierowanie)\s+(?:zespołem|zespolem|ludźmi|ludzmi|pracownikami|podwładnymi|podwladnymi)\b"
-        r"|\bpeople\s+management\b",
-        text,
-    ):
-        codes.add("PEOPLE_MANAGEMENT_WITHOUT_EVIDENCE")
-    if re.search(
-        r"\b\d+\s*(?:osób|osob|pracowników|pracownikow|podwładnych|podwladnych|people|reports)\b",
-        text,
-    ):
-        codes.add("TEAM_SIZE_WITHOUT_EVIDENCE")
-    if re.search(
-        r"\b(?:odpowiedzialno(?:ść|sc)\s+za\s+)?strategi(?:a|ę|e|ą|i)|strategic\s+responsibility\b",
-        text,
-    ):
-        codes.add("STRATEGY_RESPONSIBILITY_EVIDENCE")
-    if fact.fact_type == "responsibility_scale" and re.search(
-        r"\b\d+\s*(?:jednostk(?:a|i|ami)|oddział(?:y|ami)|oddzial(?:y|ami)|region(?:y|ami)|countries|units)\b",
-        text,
-    ):
-        codes.add("ORGANIZATIONAL_SCALE_EVIDENCE")
-    return tuple(sorted(codes))
-
-
 def _operation_for_action(action: str) -> str:
     if action == "EMPHASIZE":
         return "EMPHASIZE_EXISTING"
@@ -312,9 +314,14 @@ def _operation_for_action(action: str) -> str:
 
 def _materialize(
     candidates: list[_ItemCandidate],
-) -> tuple[list[CVTransformationPlanItem], list[EvidencePermission]]:
+) -> tuple[
+    list[CVTransformationPlanItem],
+    list[EvidencePermission],
+    list[TransformationPlanBinding],
+]:
     items = []
     permissions = []
+    bindings = []
     for ordinal, candidate in enumerate(
         sorted(candidates, key=lambda item: (item.canonical_key, item.display_label)),
         start=1,
@@ -346,7 +353,27 @@ def _materialize(
                     human_review_required=False,
                 )
             )
-    return items, permissions
+        bindings.append(
+            TransformationPlanBinding(
+                source_reference=source_reference,
+                section=candidate.section,
+                namespace=candidate.namespace,
+                source_kind=candidate.source_kind,
+                source_payload=candidate.source_payload,
+                source_fingerprint=_sha256_canonical(candidate.source_payload),
+                immutable_fields=candidate.immutable_fields,
+                allowed_claim_codes=tuple(
+                    sorted(permission.claim_code for permission in set(candidate.permissions))
+                ),
+                allowed_operation=_operation_for_action(candidate.action),
+                source_position=candidate.source_position,
+                parent_experience_position=candidate.parent_experience_position,
+                description_position=candidate.description_position,
+                parent_source_fingerprint=candidate.parent_source_fingerprint,
+                bullet_bindings=candidate.bullet_bindings,
+            )
+        )
+    return items, permissions, bindings
 
 
 def _summary_candidates(
@@ -369,6 +396,8 @@ def _summary_candidates(
             reason_code=reason_code,
             evidence_strength="WEAK",
             human_review_required=review,
+            source_kind="resume_summary",
+            source_payload=summary,
         )
     ]
 
@@ -383,25 +412,26 @@ def _experience_candidates(
     if not isinstance(raw, list):
         return []
     semantic_items = []
-    for experience in raw:
+    for source_position, experience in enumerate(raw):
         if not isinstance(experience, dict):
             continue
         semantic = {
             "title": experience.get("title", ""),
             "company": experience.get("company", ""),
             "years": experience.get("years", ""),
+            "location": experience.get("location", ""),
             "description": sorted(
                 value
                 for value in experience.get("description", [])
                 if isinstance(value, str)
             ),
         }
-        semantic_items.append((semantic, experience))
+        semantic_items.append((semantic, experience, source_position))
     semantic_items.sort(key=lambda item: _canonical(item[0]))
 
     candidates = []
     occurrences: dict[str, int] = {}
-    for semantic, experience in semantic_items:
+    for semantic, experience, source_position in semantic_items:
         base_key = _canonical(semantic)
         duplicate_ordinal = occurrences.get(base_key, 0)
         occurrences[base_key] = duplicate_ordinal + 1
@@ -424,10 +454,37 @@ def _experience_candidates(
         permission_codes = set()
         for description in semantic["description"]:
             for fact in _matching_scoped_facts(experience, description, scopes):
-                permission_codes.update(_classify_responsibility_fact(fact))
+                permission_codes.update(
+                    classify_approved_fact(fact.normalized_text, fact.fact_type)
+                )
         if duplicate_ordinal:
             action, reason_code = "OMIT", "DUPLICATE_RESUME_ITEM"
             permission_codes.clear()
+
+        raw_descriptions = experience.get("description", [])
+        bullet_bindings = tuple(
+            ExperienceBulletBinding(
+                index=index,
+                source_text=description,
+                source_fingerprint=_sha256_canonical(description),
+                allowed_claim_codes=tuple(
+                    sorted(
+                        {
+                            code
+                            for fact in _matching_scoped_facts(
+                                experience, description, scopes
+                            )
+                            for code in classify_approved_fact(
+                                fact.normalized_text, fact.fact_type
+                            )
+                        }
+                    )
+                ),
+                allowed_operation=_operation_for_action(action),
+            )
+            for index, description in enumerate(raw_descriptions)
+            if isinstance(description, str)
+        ) if isinstance(raw_descriptions, list) else ()
 
         title = str(semantic["title"]).strip()
         company = str(semantic["company"]).strip()
@@ -442,6 +499,12 @@ def _experience_candidates(
                 reason_code=reason_code,
                 evidence_strength="STRONG" if permission_codes else "MODERATE",
                 permissions=[_PermissionSpec(code) for code in sorted(permission_codes)],
+                source_kind="resume_experience",
+                source_payload=experience,
+                immutable_fields=("title", "company", "years", "location"),
+                source_position=source_position,
+                parent_source_fingerprint=_sha256_canonical(experience),
+                bullet_bindings=bullet_bindings,
             )
         )
     return candidates
@@ -473,6 +536,8 @@ def _competency_candidates(report: CareerPositioningResponse) -> list[_ItemCandi
                     evidence_strength=strength,
                     human_review_required=review,
                     permissions=permissions,
+                    source_kind="positioning_competency",
+                    source_payload=competency.name,
                 )
             )
     return candidates
@@ -481,17 +546,18 @@ def _competency_candidates(report: CareerPositioningResponse) -> list[_ItemCandi
 def _achievement_candidates(
     resume: dict[str, Any], scopes: tuple[_EmploymentScope, ...]
 ) -> list[_ItemCandidate]:
-    candidates_by_key: dict[str, _ItemCandidate] = {}
+    candidates: list[_ItemCandidate] = []
     experiences = resume.get("workExperience", [])
     if not isinstance(experiences, list):
         return []
-    for experience in experiences:
+    for parent_position, experience in enumerate(experiences):
         if not isinstance(experience, dict):
             continue
         descriptions = experience.get("description", [])
         if not isinstance(descriptions, list):
             continue
-        for claim in descriptions:
+        parent_fingerprint = _sha256_canonical(experience)
+        for description_position, claim in enumerate(descriptions):
             if not isinstance(claim, str) or not _NUMBER_RE.search(claim):
                 continue
             matching = _matching_scoped_facts(experience, claim, scopes)
@@ -502,9 +568,11 @@ def _achievement_candidates(
                     "role": normalize_truth_text(experience.get("title")),
                     "years": _resume_year_bounds(experience.get("years")),
                     "claim": normalize_truth_text(claim),
+                    "parent_position": parent_position,
+                    "description_position": description_position,
                 }
             )
-            candidates_by_key[key] = _ItemCandidate(
+            candidates.append(_ItemCandidate(
                 namespace="resume",
                 section="ACHIEVEMENTS",
                 canonical_key=key,
@@ -522,8 +590,21 @@ def _achievement_candidates(
                     if approved
                     else []
                 ),
-            )
-    return list(candidates_by_key.values())
+                source_kind="resume_achievement",
+                source_payload={
+                    "content": claim,
+                    "title": experience.get("title", ""),
+                    "company": experience.get("company", ""),
+                    "years": experience.get("years", ""),
+                    "location": experience.get("location", ""),
+                },
+                immutable_fields=("title", "company", "years", "location"),
+                source_position=description_position,
+                parent_experience_position=parent_position,
+                description_position=description_position,
+                parent_source_fingerprint=parent_fingerprint,
+            ))
+    return candidates
 
 
 def _tool_candidates(
@@ -569,6 +650,8 @@ def _tool_candidates(
                     if approved
                     else []
                 ),
+                source_kind="resume_tool",
+                source_payload=original,
             )
         )
     return candidates
@@ -645,7 +728,7 @@ def compute_plan_fingerprint(
     )
 
 
-def build_cv_transformation_plan(
+def build_cv_transformation_plan_bundle(
     *,
     resume_id: str,
     job_id: str,
@@ -654,8 +737,8 @@ def build_cv_transformation_plan(
     truth_library: dict[str, Any],
     career_report: CareerPositioningResponse,
     now: datetime,
-) -> CVTransformationPlan:
-    """Build a stable plan; only ``generated_at`` may differ between calls."""
+) -> CVTransformationPlanBundle:
+    """Build public plan and private bindings from the exact same candidates."""
 
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
@@ -667,21 +750,21 @@ def build_cv_transformation_plan(
     approved_tools = _approved_exact_technical_values(truth_library)
     strategy = career_report.positioning.positioning_strategy
 
-    summary, summary_permissions = _materialize(
+    summary, summary_permissions, summary_bindings = _materialize(
         _summary_candidates(
             processed, strategy, career_report.positioning.requires_human_review
         )
     )
-    experience, experience_permissions = _materialize(
+    experience, experience_permissions, experience_bindings = _materialize(
         _experience_candidates(processed, job_tokens, strategy, scopes)
     )
-    competencies, competency_permissions = _materialize(
+    competencies, competency_permissions, competency_bindings = _materialize(
         _competency_candidates(career_report)
     )
-    achievements, achievement_permissions = _materialize(
+    achievements, achievement_permissions, achievement_bindings = _materialize(
         _achievement_candidates(processed, scopes)
     )
-    tools, tool_permissions = _materialize(
+    tools, tool_permissions, tool_bindings = _materialize(
         _tool_candidates(processed, job_tokens, approved_tools)
     )
     permissions = sorted(
@@ -731,7 +814,7 @@ def build_cv_transformation_plan(
             job_requirements_count=_job_requirements_count(job_content),
         ),
     )
-    return plan.model_copy(
+    final_plan = plan.model_copy(
         update={
             "plan_fingerprint": compute_plan_fingerprint(
                 plan,
@@ -741,3 +824,37 @@ def build_cv_transformation_plan(
             )
         }
     )
+    bindings = tuple(
+        sorted(
+            summary_bindings
+            + experience_bindings
+            + competency_bindings
+            + achievement_bindings
+            + tool_bindings,
+            key=lambda item: item.source_reference,
+        )
+    )
+    return CVTransformationPlanBundle(plan=final_plan, bindings=bindings)
+
+
+def build_cv_transformation_plan(
+    *,
+    resume_id: str,
+    job_id: str,
+    resume: dict[str, Any],
+    job: dict[str, Any],
+    truth_library: dict[str, Any],
+    career_report: CareerPositioningResponse,
+    now: datetime,
+) -> CVTransformationPlan:
+    """Backward-compatible public-plan builder."""
+
+    return build_cv_transformation_plan_bundle(
+        resume_id=resume_id,
+        job_id=job_id,
+        resume=resume,
+        job=job,
+        truth_library=truth_library,
+        career_report=career_report,
+        now=now,
+    ).plan

@@ -191,6 +191,50 @@ class TestOpenAICompatibleTransport:
         assert out == {"required_skills": ["Python"], "keywords": ["fastapi"]}
         assert route.called
 
+    @pytest.mark.parametrize(
+        ("transport_content", "accepted"),
+        [
+            ('{"answer":"ok"}', True),
+            ('```json\n{"answer":"ok"}\n```', False),
+            ('Oto wynik: {"answer":"ok"}', False),
+            ('{"answer":"ok"} gotowe', False),
+            ('<div>{"answer":"ok"}</div>', False),
+            ('{"answer":"ok"} {"second":true}', False),
+        ],
+        ids=["clean", "fence", "leading-prose", "trailing-prose", "html", "second-object"],
+    )
+    @respx.mock
+    async def test_strict_json_envelope_over_the_wire(self, transport_content, accepted):
+        route = respx.post("http://local-llm.test/v1/chat/completions").mock(
+            return_value=httpx.Response(
+                200, json=_openai_chat_completion(transport_content)
+            )
+        )
+        cfg = LLMConfig(
+            provider="openai_compatible",
+            model="llama-3.1-8b",
+            api_key="",
+            api_base="http://local-llm.test/v1",
+        )
+        if accepted:
+            assert await complete_json(
+                "Return JSON",
+                config=cfg,
+                schema_type="cv_transformation_generation",
+                retries=0,
+                strict_json_envelope=True,
+            ) == {"answer": "ok"}
+        else:
+            with pytest.raises(ValueError):
+                await complete_json(
+                    "Return JSON",
+                    config=cfg,
+                    schema_type="cv_transformation_generation",
+                    retries=0,
+                    strict_json_envelope=True,
+                )
+        assert route.called
+
 
 # ---------------------------------------------------------------------------
 # ollama — TRUE respx HTTP

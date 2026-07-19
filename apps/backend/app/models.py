@@ -162,6 +162,48 @@ class CVTransformationPlanApproval(Base):
     )
 
 
+class CVTransformationGeneration(Base):
+    """Technical draft generated from one exact approved transformation plan."""
+
+    __tablename__ = "cv_transformation_generations"
+
+    generation_id: Mapped[str] = mapped_column(String, primary_key=True)
+    approval_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    resume_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    job_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    plan_version: Mapped[str] = mapped_column(String, nullable=False)
+    plan_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    generation_version: Mapped[str] = mapped_column(String, nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String, nullable=False)
+    generation_input_fingerprint: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True
+    )
+    status: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+    model: Mapped[str] = mapped_column(String, nullable=False)
+    draft_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    provenance_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    failure_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_at: Mapped[str] = mapped_column(String, default=_utcnow_iso, nullable=False)
+    updated_at: Mapped[str] = mapped_column(String, default=_utcnow_iso, nullable=False)
+    completed_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('GENERATING', 'GENERATED', 'FAILED', 'SUPERSEDED')",
+            name="ck_transformation_generation_status",
+        ),
+        Index(
+            "ix_generation_current_scope",
+            "job_id",
+            "resume_id",
+            "plan_fingerprint",
+            "updated_at",
+        ),
+    )
+
+
 
 class ApiKey(Base):
     """An encrypted LLM provider API key.

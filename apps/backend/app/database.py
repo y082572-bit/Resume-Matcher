@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -30,6 +30,7 @@ from app.models import (
     ApiKey,
     Application,
     CVTransformationPlanApproval,
+    CVTransformationGeneration,
     Improvement,
     Job,
     MetricEvent,
@@ -218,6 +219,35 @@ class Database:
             "guardrails_acknowledged": row.guardrails_acknowledged,
             "created_at": row.created_at,
             "updated_at": row.updated_at,
+        }
+
+    @staticmethod
+    def _transformation_generation_to_dict(
+        row: CVTransformationGeneration,
+    ) -> dict[str, Any]:
+        return {
+            "generation_id": row.generation_id,
+            "approval_id": row.approval_id,
+            "resume_id": row.resume_id,
+            "job_id": row.job_id,
+            "plan_version": row.plan_version,
+            "plan_fingerprint": row.plan_fingerprint,
+            "generation_version": row.generation_version,
+            "prompt_version": row.prompt_version,
+            "generation_input_fingerprint": row.generation_input_fingerprint,
+            "status": row.status,
+            "provider": row.provider,
+            "model": row.model,
+            "draft_resume": row.draft_json,
+            "provenance": row.provenance_json or [],
+            "failure_code": row.failure_code,
+            "attempt_count": row.attempt_count,
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+            "completed_at": row.completed_at,
+            "requires_truth_validation": True,
+            "truth_validation_status": "NOT_RUN",
+            "applied_to_resume": False,
         }
 
     # -- Resume operations --------------------------------------------------
@@ -816,6 +846,177 @@ class Database:
         )
         return result.status == RecordEventStatus.RECORDED
 
+    # -- Approved-plan generation operations -------------------------------
+
+    async def claim_transformation_generation(
+        self, *, generation_input_fingerprint: str, values: dict[str, Any]
+    ) -> tuple[dict[str, Any], bool]:
+        """Atomically create the sole GENERATING row for an exact input."""
+
+        now = _now()
+        generation_id = str(uuid4())
+        async with self._session() as session:
+            inserted_id = await session.scalar(
+                sqlite_insert(CVTransformationGeneration)
+                .values(
+                    generation_id=generation_id,
+                    generation_input_fingerprint=generation_input_fingerprint,
+                    status="GENERATING",
+                    attempt_count=1,
+                    created_at=now,
+                    updated_at=now,
+                    **values,
+                )
+                .on_conflict_do_nothing(
+                    index_elements=["generation_input_fingerprint"]
+                )
+                .returning(CVTransformationGeneration.generation_id)
+            )
+            await session.commit()
+            row = (
+                await session.execute(
+                    select(CVTransformationGeneration).where(
+                        CVTransformationGeneration.generation_input_fingerprint
+                        == generation_input_fingerprint
+                    )
+                )
+            ).scalars().one()
+            return self._transformation_generation_to_dict(row), inserted_id is not None
+
+    async def retry_failed_transformation_generation(
+        self, generation_id: str
+    ) -> tuple[dict[str, Any], bool]:
+        """Atomically let one retry caller move FAILED back to GENERATING."""
+
+        now = _now()
+        async with self._session() as session:
+            result = await session.execute(
+                update(CVTransformationGeneration)
+                .where(
+                    CVTransformationGeneration.generation_id == generation_id,
+                    CVTransformationGeneration.status == "FAILED",
+                )
+                .values(
+                    status="GENERATING",
+                    failure_code=None,
+                    draft_json=None,
+                    provenance_json=None,
+                    completed_at=None,
+                    updated_at=now,
+                    attempt_count=CVTransformationGeneration.attempt_count + 1,
+                )
+            )
+            await session.commit()
+            row = await session.get(CVTransformationGeneration, generation_id)
+            if row is None:
+                raise ValueError("Generation not found")
+            return self._transformation_generation_to_dict(row), result.rowcount == 1
+
+    async def recover_superseded_transformation_generation(
+        self, generation_id: str
+    ) -> tuple[dict[str, Any], bool]:
+        """Atomically let one caller reclaim the exact SUPERSEDED input row."""
+
+        now = _now()
+        async with self._session() as session:
+            result = await session.execute(
+                update(CVTransformationGeneration)
+                .where(
+                    CVTransformationGeneration.generation_id == generation_id,
+                    CVTransformationGeneration.status == "SUPERSEDED",
+                )
+                .values(
+                    status="GENERATING",
+                    failure_code=None,
+                    draft_json=None,
+                    provenance_json=None,
+                    completed_at=None,
+                    updated_at=now,
+                    attempt_count=CVTransformationGeneration.attempt_count + 1,
+                )
+            )
+            await session.commit()
+            row = await session.get(CVTransformationGeneration, generation_id)
+            if row is None:
+                raise ValueError("Generation not found")
+            return self._transformation_generation_to_dict(row), result.rowcount == 1
+
+    async def finish_transformation_generation(
+        self,
+        generation_id: str,
+        *,
+        status: str,
+        draft_resume: dict[str, Any] | None = None,
+        provenance: list[dict[str, Any]] | None = None,
+        failure_code: str | None = None,
+        expected_attempt_count: int | None = None,
+        expected_generation_input_fingerprint: str | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        """Compare-and-set a claimed attempt without storing a partial draft."""
+
+        now = _now()
+        async with self._session() as session:
+            conditions = [
+                CVTransformationGeneration.generation_id == generation_id,
+                CVTransformationGeneration.status == "GENERATING",
+            ]
+            if expected_attempt_count is not None:
+                conditions.append(
+                    CVTransformationGeneration.attempt_count == expected_attempt_count
+                )
+            if expected_generation_input_fingerprint is not None:
+                conditions.append(
+                    CVTransformationGeneration.generation_input_fingerprint
+                    == expected_generation_input_fingerprint
+                )
+            result = await session.execute(
+                update(CVTransformationGeneration)
+                .where(*conditions)
+                .values(
+                    status=status,
+                    draft_json=draft_resume if status == "GENERATED" else None,
+                    provenance_json=provenance if status == "GENERATED" else None,
+                    failure_code=failure_code,
+                    completed_at=now,
+                    updated_at=now,
+                )
+            )
+            await session.commit()
+            row = await session.get(CVTransformationGeneration, generation_id)
+            if row is None:
+                raise ValueError("Generation not found")
+            return self._transformation_generation_to_dict(row), result.rowcount == 1
+
+    async def get_transformation_generation(
+        self,
+        *,
+        generation_id: str | None = None,
+        job_id: str | None = None,
+        resume_id: str | None = None,
+        plan_fingerprint: str | None = None,
+        generation_input_fingerprint: str | None = None,
+    ) -> dict[str, Any] | None:
+        async with self._session() as session:
+            stmt = select(CVTransformationGeneration)
+            if generation_id is not None:
+                stmt = stmt.where(CVTransformationGeneration.generation_id == generation_id)
+            if job_id is not None:
+                stmt = stmt.where(CVTransformationGeneration.job_id == job_id)
+            if resume_id is not None:
+                stmt = stmt.where(CVTransformationGeneration.resume_id == resume_id)
+            if plan_fingerprint is not None:
+                stmt = stmt.where(
+                    CVTransformationGeneration.plan_fingerprint == plan_fingerprint
+                )
+            if generation_input_fingerprint is not None:
+                stmt = stmt.where(
+                    CVTransformationGeneration.generation_input_fingerprint
+                    == generation_input_fingerprint
+                )
+            stmt = stmt.order_by(CVTransformationGeneration.updated_at.desc())
+            row = (await session.execute(stmt)).scalars().first()
+            return self._transformation_generation_to_dict(row) if row else None
+
     # -- Application (tracker) operations -----------------------------------
 
     async def _next_position(self, session: AsyncSession, status: str) -> int:
@@ -1275,6 +1476,7 @@ class Database:
         reset never wiped the user's stored credentials.
         """
         async with self._session() as session:
+            await session.execute(delete(CVTransformationGeneration))
             await session.execute(delete(CVTransformationPlanApproval))
             await session.execute(delete(Application))
             await session.execute(delete(Improvement))

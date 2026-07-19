@@ -460,10 +460,10 @@ def test_english_speaking_market_is_not_language_level_evidence():
     }
 
 
-def test_arbitrary_number_is_not_quantified_result_evidence():
+def test_exact_approved_activity_with_number_grants_bullet_scoped_permission():
     plan = _plan_for_scoped_fact("Obsłużono 20 klientów", "activity")
     assert plan.achievements_plan[0].action == "HUMAN_REVIEW"
-    assert "QUANTIFIED_RESULT_WITHOUT_EVIDENCE" not in {
+    assert "QUANTIFIED_RESULT_WITHOUT_EVIDENCE" in {
         permission.claim_code for permission in plan.evidence_permissions
     }
 

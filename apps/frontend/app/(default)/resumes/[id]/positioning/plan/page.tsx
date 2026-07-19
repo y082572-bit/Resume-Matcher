@@ -446,6 +446,14 @@ export default function TransformationPlanReviewPage() {
           <Button disabled={!canApprove} onClick={() => void save(true)}>
             {saving ? 'Zapisywanie…' : 'Zatwierdź plan'}
           </Button>
+          {approval?.status === 'APPROVED' && !stale && !error && (
+            <Button
+              disabled={loading || saving}
+              onClick={() => router.push(`/resumes/${resumeId}/positioning/plan/generation`)}
+            >
+              Generuj kontrolowany draft
+            </Button>
+          )}
           <Button variant="outline" onClick={() => router.push(`/resumes/${resumeId}/positioning`)}>
             Wróć do Career Positioning
           </Button>

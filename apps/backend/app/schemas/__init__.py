@@ -81,9 +81,21 @@ from app.schemas.career_positioning import (
     EvidenceSchema,
     LimitationsSchema,
 )
+from app.schemas.cv_transformation_plan import (
+    CVTransformationPlan,
+    CVTransformationPlanItem,
+    EvidencePermission,
+    ProhibitedClaim,
+    TransformationSourceSummary,
+)
 
 __all__ = [
     "PersonalInfo",
+    "CVTransformationPlan",
+    "CVTransformationPlanItem",
+    "EvidencePermission",
+    "ProhibitedClaim",
+    "TransformationSourceSummary",
     "Experience",
     "Education",
     "Project",

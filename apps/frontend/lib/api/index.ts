@@ -68,3 +68,10 @@ export {
 
 // Career positioning operations
 export { fetchCareerPositioning, fetchResumeJobContext } from './career-positioning';
+
+// Deterministic Positioning-to-CV plan preview (Stage 10A; no UI or generation).
+export {
+  fetchCVTransformationPlan,
+  parseCVTransformationPlan,
+  CVTransformationPlanApiError,
+} from './cv-transformation-plan';

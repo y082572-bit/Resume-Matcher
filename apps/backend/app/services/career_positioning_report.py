@@ -110,9 +110,10 @@ def is_entry_allowed(entry: dict[str, Any], reguly: dict[str, Any]) -> bool:
     if status not in auto_cv:
         return False
 
+    # These lifecycle states are never trusted, even if a malformed ruleset
+    # accidentally lists one as eligible for automatic CV generation.
     if status in ("NIEJASNE", "USUNIĘTE", "PRAWDA_Z_DOKUMENTU_DO_ZATWIERDZENIA"):
-        if status not in auto_cv:
-            return False
+        return False
 
     return True
 

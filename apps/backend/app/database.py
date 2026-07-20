@@ -45,6 +45,7 @@ from app.services.project_metrics import (
     RecordEventStatus,
     ApplicationStatusConflictError,
 )
+from app.services.truth_repository import TruthService
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,12 @@ class Database:
         self._ensure_initialized()
         assert self._sync_session_factory is not None
         return self._sync_session_factory
+
+    @property
+    def truth_service(self) -> TruthService:
+        """Return the inactive P1 internal service without wiring legacy flows."""
+
+        return TruthService(self._session)
 
     async def close(self) -> None:
         """Dispose engines and release file handles."""

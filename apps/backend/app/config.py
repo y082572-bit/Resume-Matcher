@@ -242,6 +242,9 @@ class Settings(BaseSettings):
     reload: bool = False
     log_level: Literal["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"] = "INFO"
     frontend_base_url: str = "http://localhost:3000"
+    # P1 foundation only. This flag does not switch planning, generation,
+    # validation, Truth Library loading, routers, or dual-write behavior.
+    explicit_provenance_enabled: bool = False
 
     # Hard timeout (seconds) for a single resume tailoring/improve request — the
     # backend wraps the improve flow in asyncio.wait_for(timeout=this). It MUST be

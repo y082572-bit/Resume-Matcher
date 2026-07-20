@@ -10,7 +10,18 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, Index, Integer, String, Text, UniqueConstraint, text, CheckConstraint
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -200,6 +211,355 @@ class CVTransformationGeneration(Base):
             "resume_id",
             "plan_fingerprint",
             "updated_at",
+        ),
+    )
+
+
+_UUID_CHECK = (
+    "length({name}) = 36 "
+    "AND substr({name}, 9, 1) = '-' AND substr({name}, 14, 1) = '-' "
+    "AND substr({name}, 19, 1) = '-' AND substr({name}, 24, 1) = '-' "
+    "AND length(replace({name}, '-', '')) = 32 "
+    "AND replace({name}, '-', '') NOT GLOB '*[^0-9a-f]*' "
+    "AND substr({name}, 15, 1) = '4' "
+    "AND substr({name}, 20, 1) IN ('8','9','a','b')"
+)
+_SHA256_CHECK = (
+    "length({name}) = 64 AND lower({name}) = {name} "
+    "AND {name} NOT GLOB '*[^0-9a-f]*'"
+)
+_UTC_TIMESTAMP_CHECK = (
+    "({name} IS NULL OR (length({name}) = 27 "
+    "AND {name} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T"
+    "[0-9][0-9]:[0-9][0-9]:[0-9][0-9]."
+    "[0-9][0-9][0-9][0-9][0-9][0-9]Z' "
+    "AND CAST(substr({name}, 1, 4) AS INTEGER) BETWEEN 1 AND 9999 "
+    "AND CAST(substr({name}, 6, 2) AS INTEGER) BETWEEN 1 AND 12 "
+    "AND CAST(substr({name}, 9, 2) AS INTEGER) BETWEEN 1 AND "
+    "CASE CAST(substr({name}, 6, 2) AS INTEGER) "
+    "WHEN 2 THEN 28 + CASE "
+    "WHEN (CAST(substr({name}, 1, 4) AS INTEGER) % 4 = 0 "
+    "AND (CAST(substr({name}, 1, 4) AS INTEGER) % 100 != 0 "
+    "OR CAST(substr({name}, 1, 4) AS INTEGER) % 400 = 0)) THEN 1 ELSE 0 END "
+    "WHEN 4 THEN 30 WHEN 6 THEN 30 WHEN 9 THEN 30 WHEN 11 THEN 30 "
+    "ELSE 31 END "
+    "AND CAST(substr({name}, 12, 2) AS INTEGER) BETWEEN 0 AND 23 "
+    "AND CAST(substr({name}, 15, 2) AS INTEGER) BETWEEN 0 AND 59 "
+    "AND CAST(substr({name}, 18, 2) AS INTEGER) BETWEEN 0 AND 59 "
+    "AND substr({name}, 1, 19) = strftime("
+    "'%Y-%m-%dT%H:%M:%S', substr({name}, 1, 19) || 'Z')"
+    "))"
+)
+
+
+class TruthEntity(Base):
+    """Stable UUID identity for one durable Truth Library entity."""
+
+    __tablename__ = "truth_entities"
+
+    entity_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    entity_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    parent_entity_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("truth_entities.entity_id", ondelete="RESTRICT"), nullable=True
+    )
+    display_name: Mapped[str] = mapped_column(String(500), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="ACTIVE")
+    source_reference: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    schema_version: Mapped[str] = mapped_column(String(8), nullable=False, default="1.0")
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    content_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False, default=_utcnow_iso)
+    updated_at: Mapped[str] = mapped_column(String, nullable=False, default=_utcnow_iso)
+    archived_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(_UUID_CHECK.format(name="entity_id"), name="ck_truth_entities_uuid"),
+        CheckConstraint(
+            "entity_type IN ('PERSON','EMPLOYMENT','PROJECT','EDUCATION',"
+            "'CERTIFICATION','COURSE','LANGUAGE','SKILL','TOOL','TECHNOLOGY',"
+            "'AWARD','CUSTOM_ENTITY')",
+            name="ck_truth_entities_type",
+        ),
+        CheckConstraint(
+            "status IN ('ACTIVE','REVIEW_REQUIRED','REJECTED','ARCHIVED')",
+            name="ck_truth_entities_status",
+        ),
+        CheckConstraint("schema_version = '1.0'", name="ck_truth_entities_schema"),
+        CheckConstraint("revision >= 1", name="ck_truth_entities_revision"),
+        CheckConstraint(
+            "parent_entity_id IS NULL OR parent_entity_id != entity_id",
+            name="ck_truth_entities_not_self_parent",
+        ),
+        CheckConstraint(
+            "(status = 'ARCHIVED' AND archived_at IS NOT NULL) OR "
+            "(status != 'ARCHIVED' AND archived_at IS NULL)",
+            name="ck_truth_entities_archive",
+        ),
+        CheckConstraint(
+            _SHA256_CHECK.format(name="content_fingerprint"),
+            name="ck_truth_entities_fingerprint",
+        ),
+        Index("ix_truth_entities_type", "entity_type"),
+        Index("ix_truth_entities_status", "status"),
+        Index("ix_truth_entities_parent", "parent_entity_id"),
+        Index("ix_truth_entities_fingerprint", "content_fingerprint"),
+    )
+
+
+class TruthFact(Base):
+    """Atomic, versioned Truth fact attached to exactly one entity."""
+
+    __tablename__ = "truth_facts"
+
+    fact_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    entity_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("truth_entities.entity_id", ondelete="RESTRICT"), nullable=False
+    )
+    fact_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    value_json: Mapped[Any] = mapped_column(JSON, nullable=False)
+    normalized_value_json: Mapped[Any] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="DRAFT")
+    use_in_cv: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    requires_approval: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    transferability: Mapped[str] = mapped_column(String(32), nullable=False)
+    employment_scope_entity_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("truth_entities.entity_id", ondelete="RESTRICT"), nullable=True
+    )
+    source_reference: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    schema_version: Mapped[str] = mapped_column(String(8), nullable=False, default="1.0")
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    content_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False, default=_utcnow_iso)
+    updated_at: Mapped[str] = mapped_column(String, nullable=False, default=_utcnow_iso)
+    archived_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(_UUID_CHECK.format(name="fact_id"), name="ck_truth_facts_uuid"),
+        CheckConstraint(
+            "length(fact_type) BETWEEN 1 AND 128 AND fact_type = upper(fact_type) "
+            "AND fact_type NOT GLOB '*[^A-Z0-9_]*' "
+            "AND substr(fact_type, 1, 1) GLOB '[A-Z]'",
+            name="ck_truth_facts_type",
+        ),
+        CheckConstraint(
+            "status IN ('DRAFT','CONFIRMED','REVIEW_REQUIRED','REJECTED','ARCHIVED')",
+            name="ck_truth_facts_status",
+        ),
+        CheckConstraint(
+            "transferability IN ('GLOBAL_TRANSFERABLE','ROLE_TRANSFERABLE',"
+            "'INDUSTRY_TRANSFERABLE','EMPLOYMENT_SCOPED','ENTITY_SCOPED',"
+            "'NON_TRANSFERABLE','EXACT_ONLY')",
+            name="ck_truth_facts_transferability",
+        ),
+        CheckConstraint("json_valid(value_json)", name="ck_truth_facts_value_json"),
+        CheckConstraint(
+            "json_valid(normalized_value_json)",
+            name="ck_truth_facts_normalized_value_json",
+        ),
+        CheckConstraint("schema_version = '1.0'", name="ck_truth_facts_schema"),
+        CheckConstraint("revision >= 1", name="ck_truth_facts_revision"),
+        CheckConstraint(
+            "(status = 'ARCHIVED' AND archived_at IS NOT NULL) OR "
+            "(status != 'ARCHIVED' AND archived_at IS NULL)",
+            name="ck_truth_facts_archive",
+        ),
+        CheckConstraint(
+            _SHA256_CHECK.format(name="content_fingerprint"),
+            name="ck_truth_facts_fingerprint",
+        ),
+        Index("ix_truth_facts_entity", "entity_id"),
+        Index("ix_truth_facts_entity_status", "entity_id", "status"),
+        Index("ix_truth_facts_type", "fact_type"),
+        Index("ix_truth_facts_employment_scope", "employment_scope_entity_id"),
+        Index("ix_truth_facts_fingerprint", "content_fingerprint"),
+    )
+
+
+class TruthFactVariant(Base):
+    __tablename__ = "truth_fact_variants"
+
+    variant_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    fact_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("truth_facts.fact_id", ondelete="RESTRICT"), nullable=False
+    )
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_text: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="DRAFT")
+    operation: Mapped[str] = mapped_column(String(32), nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(8), nullable=False, default="1.0")
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    content_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False, default=_utcnow_iso)
+    updated_at: Mapped[str] = mapped_column(String, nullable=False, default=_utcnow_iso)
+    archived_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "fact_id", "normalized_text", "operation",
+            name="uq_truth_fact_variant_semantics",
+        ),
+        CheckConstraint(_UUID_CHECK.format(name="variant_id"), name="ck_truth_variants_uuid"),
+        CheckConstraint(
+            "status IN ('DRAFT','CONFIRMED','REJECTED','ARCHIVED')",
+            name="ck_truth_variants_status",
+        ),
+        CheckConstraint(
+            "operation IN ('EXACT_COPY','FORMAT_NORMALIZATION','CONTROLLED_REPHRASE')",
+            name="ck_truth_variants_operation",
+        ),
+        CheckConstraint("schema_version = '1.0'", name="ck_truth_variants_schema"),
+        CheckConstraint("revision >= 1", name="ck_truth_variants_revision"),
+        CheckConstraint(
+            "(status = 'ARCHIVED' AND archived_at IS NOT NULL) OR "
+            "(status != 'ARCHIVED' AND archived_at IS NULL)",
+            name="ck_truth_variants_archive",
+        ),
+        CheckConstraint(
+            _SHA256_CHECK.format(name="content_fingerprint"),
+            name="ck_truth_variants_fingerprint",
+        ),
+        Index("ix_truth_variants_fact", "fact_id"),
+        Index("ix_truth_variants_fact_status", "fact_id", "status"),
+        Index("ix_truth_variants_fingerprint", "content_fingerprint"),
+    )
+
+
+class TruthEvidence(Base):
+    __tablename__ = "truth_evidence"
+
+    evidence_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    fact_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("truth_facts.fact_id", ondelete="RESTRICT"), nullable=False
+    )
+    evidence_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_entity_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("truth_entities.entity_id", ondelete="RESTRICT"), nullable=True
+    )
+    source_reference: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    source_locator: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="REVIEW_REQUIRED")
+    captured_at: Mapped[str] = mapped_column(String, nullable=False)
+    confirmed_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    confirmed_by: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    schema_version: Mapped[str] = mapped_column(String(8), nullable=False, default="1.0")
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    content_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False, default=_utcnow_iso)
+    updated_at: Mapped[str] = mapped_column(String, nullable=False, default=_utcnow_iso)
+    archived_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(_UUID_CHECK.format(name="evidence_id"), name="ck_truth_evidence_uuid"),
+        CheckConstraint(
+            "evidence_type IN ('DOCUMENT','USER_CONFIRMATION','IMPORT','SYSTEM_RECORD')",
+            name="ck_truth_evidence_type",
+        ),
+        CheckConstraint(
+            "status IN ('ACTIVE','REVIEW_REQUIRED','REJECTED','ARCHIVED')",
+            name="ck_truth_evidence_status",
+        ),
+        CheckConstraint(
+            _SHA256_CHECK.format(name="content_hash"),
+            name="ck_truth_evidence_content_hash",
+        ),
+        CheckConstraint("schema_version = '1.0'", name="ck_truth_evidence_schema"),
+        CheckConstraint("revision >= 1", name="ck_truth_evidence_revision"),
+        CheckConstraint(
+            "(status = 'ARCHIVED' AND archived_at IS NOT NULL) OR "
+            "(status != 'ARCHIVED' AND archived_at IS NULL)",
+            name="ck_truth_evidence_archive",
+        ),
+        CheckConstraint(
+            _SHA256_CHECK.format(name="content_fingerprint"),
+            name="ck_truth_evidence_fingerprint",
+        ),
+        Index("ix_truth_evidence_fact", "fact_id"),
+        Index("ix_truth_evidence_fact_status", "fact_id", "status"),
+        Index("ix_truth_evidence_source_entity", "source_entity_id"),
+        Index("ix_truth_evidence_fingerprint", "content_fingerprint"),
+    )
+
+
+class TruthPermission(Base):
+    __tablename__ = "truth_permissions"
+
+    permission_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    fact_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("truth_facts.fact_id", ondelete="RESTRICT"), nullable=False
+    )
+    target_scope: Mapped[str] = mapped_column(String(512), nullable=False)
+    allowed_operations: Mapped[list] = mapped_column(JSON, nullable=False)
+    constraints_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="REVIEW_REQUIRED")
+    approved_by: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    approved_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    valid_from: Mapped[str | None] = mapped_column(String, nullable=True)
+    valid_until: Mapped[str | None] = mapped_column(String, nullable=True)
+    schema_version: Mapped[str] = mapped_column(String(8), nullable=False, default="1.0")
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    content_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False, default=_utcnow_iso)
+    updated_at: Mapped[str] = mapped_column(String, nullable=False, default=_utcnow_iso)
+    archived_at: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(_UUID_CHECK.format(name="permission_id"), name="ck_truth_permissions_uuid"),
+        CheckConstraint(
+            "status IN ('ACTIVE','REVIEW_REQUIRED','REVOKED','ARCHIVED')",
+            name="ck_truth_permissions_status",
+        ),
+        CheckConstraint(
+            "json_valid(allowed_operations) AND json_type(allowed_operations) = 'array'",
+            name="ck_truth_permissions_operations_json",
+        ),
+        CheckConstraint(
+            "json_valid(constraints_json) AND json_type(constraints_json) = 'object'",
+            name="ck_truth_permissions_constraints_json",
+        ),
+        CheckConstraint(
+            _UTC_TIMESTAMP_CHECK.format(name="valid_from"),
+            name="ck_truth_permissions_valid_from_utc",
+        ),
+        CheckConstraint(
+            _UTC_TIMESTAMP_CHECK.format(name="valid_until"),
+            name="ck_truth_permissions_valid_until_utc",
+        ),
+        CheckConstraint(
+            "valid_from IS NULL OR valid_until IS NULL OR valid_until > valid_from",
+            name="ck_truth_permissions_valid_window",
+        ),
+        CheckConstraint("schema_version = '1.0'", name="ck_truth_permissions_schema"),
+        CheckConstraint("revision >= 1", name="ck_truth_permissions_revision"),
+        CheckConstraint(
+            "(status = 'ARCHIVED' AND archived_at IS NOT NULL) OR "
+            "(status != 'ARCHIVED' AND archived_at IS NULL)",
+            name="ck_truth_permissions_archive",
+        ),
+        CheckConstraint(
+            _SHA256_CHECK.format(name="content_fingerprint"),
+            name="ck_truth_permissions_fingerprint",
+        ),
+        Index("ix_truth_permissions_fact", "fact_id"),
+        Index("ix_truth_permissions_fact_status", "fact_id", "status"),
+        Index("ix_truth_permissions_target", "target_scope"),
+        Index("ix_truth_permissions_fingerprint", "content_fingerprint"),
+        Index(
+            "uq_truth_permissions_active_scope",
+            "fact_id",
+            "target_scope",
+            unique=True,
+            sqlite_where=text("status = 'ACTIVE'"),
         ),
     )
 

@@ -564,6 +564,103 @@ class TruthPermission(Base):
     )
 
 
+class TruthLegacyMigrationMap(Base):
+    """Audit ledger mapping one legacy Truth Library record to P1 identity.
+
+    Owned by Explicit Provenance P2 (see docs/explicit-provenance-stage-p2.md).
+    One row per legacy record considered for migration, regardless of whether
+    it produced a ``TruthEntity``/``TruthFact`` (``target_entity_id`` and
+    ``target_fact_id`` are nullable — a REJECTED or UNSUPPORTED record still
+    gets a ledger row with no target).
+    """
+
+    __tablename__ = "truth_legacy_migration_map"
+
+    migration_map_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    person_entity_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("truth_entities.entity_id", ondelete="RESTRICT"), nullable=False
+    )
+    legacy_source_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    # Audit metadata only — deliberately excluded from identity/fingerprint so
+    # environment (Mac/Docker/CI) never changes migrated record identity.
+    legacy_source_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    legacy_category: Mapped[str] = mapped_column(String(64), nullable=False)
+    legacy_record_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    legacy_record_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_entity_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("truth_entities.entity_id", ondelete="RESTRICT"), nullable=True
+    )
+    target_fact_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("truth_facts.fact_id", ondelete="RESTRICT"), nullable=True
+    )
+    classification: Mapped[str] = mapped_column(String(16), nullable=False)
+    migration_schema_version: Mapped[str] = mapped_column(String(16), nullable=False, default="1.0")
+    created_at: Mapped[str] = mapped_column(String, nullable=False, default=_utcnow_iso)
+    updated_at: Mapped[str] = mapped_column(String, nullable=False, default=_utcnow_iso)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "person_entity_id",
+            "legacy_source_id",
+            "migration_schema_version",
+            "legacy_category",
+            "legacy_record_key",
+            name="uq_truth_legacy_migration_map_identity",
+        ),
+        CheckConstraint(
+            _UUID_CHECK.format(name="migration_map_id"),
+            name="ck_truth_legacy_migration_map_uuid",
+        ),
+        CheckConstraint(
+            _UUID_CHECK.format(name="person_entity_id"),
+            name="ck_truth_legacy_migration_map_person_uuid",
+        ),
+        CheckConstraint(
+            "(target_entity_id IS NULL) OR (" + _UUID_CHECK.format(name="target_entity_id") + ")",
+            name="ck_truth_legacy_migration_map_target_entity_uuid",
+        ),
+        CheckConstraint(
+            "(target_fact_id IS NULL) OR (" + _UUID_CHECK.format(name="target_fact_id") + ")",
+            name="ck_truth_legacy_migration_map_target_fact_uuid",
+        ),
+        CheckConstraint(
+            _SHA256_CHECK.format(name="legacy_record_fingerprint"),
+            name="ck_truth_legacy_migration_map_fingerprint",
+        ),
+        CheckConstraint(
+            "legacy_category IN ("
+            "'doswiadczenieZawodowe','osiagnieciaLiczbowe','skalaOdpowiedzialnosci',"
+            "'kompetencje','narzedzia','technologie','certyfikaty','kursy',"
+            "'wyksztalcenie','jezyki','branze','daneOsobowe')",
+            name="ck_truth_legacy_migration_map_category",
+        ),
+        CheckConstraint(
+            "classification IN ('MIGRATABLE','REQUIRES_REVIEW','REJECTED','UNSUPPORTED')",
+            name="ck_truth_legacy_migration_map_classification",
+        ),
+        CheckConstraint(
+            "migration_schema_version = '1.0'",
+            name="ck_truth_legacy_migration_map_schema",
+        ),
+        Index("ix_truth_legacy_migration_map_person", "person_entity_id"),
+        Index(
+            "ix_truth_legacy_migration_map_person_source_category",
+            "person_entity_id",
+            "legacy_source_id",
+            "legacy_category",
+        ),
+        Index(
+            "ix_truth_legacy_migration_map_person_source_fingerprint",
+            "person_entity_id",
+            "legacy_source_id",
+            "legacy_record_fingerprint",
+        ),
+        Index("ix_truth_legacy_migration_map_target_entity", "target_entity_id"),
+        Index("ix_truth_legacy_migration_map_target_fact", "target_fact_id"),
+    )
+
 
 class ApiKey(Base):
     """An encrypted LLM provider API key.

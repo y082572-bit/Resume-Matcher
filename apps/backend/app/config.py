@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import field_validator
+from pydantic import UUID4, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -245,6 +245,20 @@ class Settings(BaseSettings):
     # P1 foundation only. This flag does not switch planning, generation,
     # validation, Truth Library loading, routers, or dual-write behavior.
     explicit_provenance_enabled: bool = False
+
+    # P2 legacy migration bridge (inactive by default). Does not affect any
+    # active CV flow, does not run automatically at startup, and does not
+    # connect TruthFact to generation. See docs/explicit-provenance-stage-p2.md.
+    truth_legacy_migration_enabled: bool = False
+    # UUID4 identity of the single PERSON entity that owns this installation's
+    # Truth Library. CLI --person-entity-id takes precedence over this value.
+    # Required for --apply; dry-run works without it.
+    truth_library_person_entity_id: UUID4 | None = None
+    # Stable *logical* source identifier participating in legacy identity and
+    # fingerprints. Deliberately distinct from the physical file path (which
+    # varies across Mac/Docker/CI) so migrated identity never depends on where
+    # the file happens to live.
+    truth_library_source_id: str = "truth_library_primary"
 
     # Hard timeout (seconds) for a single resume tailoring/improve request — the
     # backend wraps the improve flow in asyncio.wait_for(timeout=this). It MUST be

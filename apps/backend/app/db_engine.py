@@ -25,6 +25,7 @@ __all__ = [
     "make_sync_engine",
     "init_models_sync",
     "preflight_explicit_provenance_p1_schema",
+    "preflight_explicit_provenance_p2_schema",
 ]
 
 
@@ -64,7 +65,30 @@ _P1_TABLE_COLUMNS = {
 _P1_CANONICAL_LOWER: dict[str, str] = {name.lower(): name for name in _P1_TABLE_COLUMNS}
 
 
-def _p1_existing_tables(conn: Any) -> set[str]:
+# ---------------------------------------------------------------------------
+# Explicit Provenance P2 — legacy Truth Library migration bridge.
+#
+# Adds exactly one managed table (``truth_legacy_migration_map``) on top of
+# the P1 foundation. It is deliberately excluded from the broad/generic
+# ``create_all`` paths below and only ever created via its own controlled
+# preflight -> create sequence, run strictly after the P1 preflight. See
+# docs/explicit-provenance-stage-p2.md.
+# ---------------------------------------------------------------------------
+_P2_MANIFEST_VERSION = "explicit-provenance-p2-schema-manifest-v1"
+_P2_TABLE_COLUMNS = {
+    "truth_legacy_migration_map": {
+        "migration_map_id", "person_entity_id", "legacy_source_id",
+        "legacy_source_path", "legacy_category", "legacy_record_key",
+        "legacy_record_fingerprint", "target_entity_id", "target_fact_id",
+        "classification", "migration_schema_version", "created_at", "updated_at",
+    },
+}
+_P2_CANONICAL_LOWER: dict[str, str] = {name.lower(): name for name in _P2_TABLE_COLUMNS}
+
+
+def _existing_tables_for(
+    conn: Any, canonical_lower: dict[str, str], *, error_code: str
+) -> set[str]:
     all_tables = list(
         conn.exec_driver_sql(
             "SELECT name FROM sqlite_master WHERE type='table'"
@@ -72,16 +96,25 @@ def _p1_existing_tables(conn: Any) -> set[str]:
     )
     matched: list[tuple[str, str]] = []
     for actual in all_tables:
-        canonical = _P1_CANONICAL_LOWER.get(actual.lower())
+        canonical = canonical_lower.get(actual.lower())
         if canonical is not None:
             matched.append((actual, canonical))
     for actual, canonical in matched:
         if actual != canonical:
-            raise RuntimeError(
-                f"ERROR_INCOMPATIBLE_P1_SCHEMA_NAME:"
-                f"actual={actual}:expected={canonical}"
-            )
+            raise RuntimeError(f"{error_code}:actual={actual}:expected={canonical}")
     return {actual for actual, _ in matched}
+
+
+def _p1_existing_tables(conn: Any) -> set[str]:
+    return _existing_tables_for(
+        conn, _P1_CANONICAL_LOWER, error_code="ERROR_INCOMPATIBLE_P1_SCHEMA_NAME"
+    )
+
+
+def _p2_existing_tables(conn: Any) -> set[str]:
+    return _existing_tables_for(
+        conn, _P2_CANONICAL_LOWER, error_code="ERROR_INCOMPATIBLE_P2_SCHEMA_NAME"
+    )
 
 
 def _normalize_sql(value: str | None) -> str | None:
@@ -125,105 +158,118 @@ def _quoted_identifier(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
 
 
-def _collect_p1_schema_manifest(conn: Any) -> dict[str, Any]:
-    tables: dict[str, Any] = {}
-    for table in sorted(_P1_TABLE_COLUMNS):
-        quoted_table = _quoted_identifier(table)
-        table_sql = conn.exec_driver_sql(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
-            (table,),
-        ).scalar_one()
-        indexes = []
-        for index_row in conn.exec_driver_sql(
-            f"PRAGMA index_list({quoted_table})"
-        ).mappings():
-            index_name = index_row["name"]
-            index_sql_row = conn.exec_driver_sql(
-                "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
-                (index_name,),
-            ).first()
-            index_sql = _normalize_sql(index_sql_row[0] if index_sql_row else None)
-            predicate = None
-            if index_sql is not None:
-                where_match = re.search(r"\bWHERE\b(.*)$", index_sql, re.IGNORECASE)
-                predicate = _normalize_sql(where_match.group(1)) if where_match else None
-            indexes.append(
-                {
-                    "name": index_name,
-                    "unique": bool(index_row["unique"]),
-                    "origin": index_row["origin"],
-                    "partial": bool(index_row["partial"]),
-                    "predicate": predicate,
-                    "sql": index_sql,
-                    "xinfo": [
-                        {
-                            "seqno": row["seqno"],
-                            "cid": row["cid"],
-                            "name": row["name"],
-                            "desc": bool(row["desc"]),
-                            "coll": row["coll"],
-                            "key": bool(row["key"]),
-                        }
-                        for row in conn.exec_driver_sql(
-                            f"PRAGMA index_xinfo({_quoted_identifier(index_name)})"
-                        ).mappings()
-                    ],
-                }
-            )
-        triggers = [
+def _collect_single_table_manifest(conn: Any, table: str) -> dict[str, Any]:
+    quoted_table = _quoted_identifier(table)
+    table_sql = conn.exec_driver_sql(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).scalar_one()
+    indexes = []
+    for index_row in conn.exec_driver_sql(
+        f"PRAGMA index_list({quoted_table})"
+    ).mappings():
+        index_name = index_row["name"]
+        index_sql_row = conn.exec_driver_sql(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
+            (index_name,),
+        ).first()
+        index_sql = _normalize_sql(index_sql_row[0] if index_sql_row else None)
+        predicate = None
+        if index_sql is not None:
+            where_match = re.search(r"\bWHERE\b(.*)$", index_sql, re.IGNORECASE)
+            predicate = _normalize_sql(where_match.group(1)) if where_match else None
+        indexes.append(
             {
-                "name": row["name"],
-                "sql": _normalize_sql(row["sql"]),
-            }
-            for row in conn.exec_driver_sql(
-                "SELECT name, sql FROM sqlite_master "
-                "WHERE type='trigger' AND tbl_name=? ORDER BY name",
-                (table,),
-            ).mappings()
-        ]
-        tables[table] = {
-            "name": table,
-            "sql": _normalize_sql(table_sql),
-            "columns": [
-                {
-                    "position": row["cid"],
-                    "name": row["name"],
-                    "type": row["type"],
-                    "nullable": not bool(row["notnull"]),
-                    "default": row["dflt_value"],
-                    "primary_key_position": row["pk"],
-                }
-                for row in conn.exec_driver_sql(
-                    f"PRAGMA table_info({quoted_table})"
-                ).mappings()
-            ],
-            "foreign_keys": sorted(
-                (
+                "name": index_name,
+                "unique": bool(index_row["unique"]),
+                "origin": index_row["origin"],
+                "partial": bool(index_row["partial"]),
+                "predicate": predicate,
+                "sql": index_sql,
+                "xinfo": [
                     {
-                        "id": row["id"],
-                        "sequence": row["seq"],
-                        "source_table": table,
-                        "source_column": row["from"],
-                        "target_table": row["table"],
-                        "target_column": row["to"],
-                        "on_update": row["on_update"],
-                        "on_delete": row["on_delete"],
-                        "match": row["match"],
+                        "seqno": row["seqno"],
+                        "cid": row["cid"],
+                        "name": row["name"],
+                        "desc": bool(row["desc"]),
+                        "coll": row["coll"],
+                        "key": bool(row["key"]),
                     }
                     for row in conn.exec_driver_sql(
-                        f"PRAGMA foreign_key_list({quoted_table})"
+                        f"PRAGMA index_xinfo({_quoted_identifier(index_name)})"
                     ).mappings()
-                ),
-                key=lambda item: (
-                    item["source_column"], item["target_table"], item["target_column"]
-                ),
-            ),
-            "check_constraints": _constraint_expressions(table_sql, "CHECK"),
-            "unique_constraints": _constraint_expressions(table_sql, "UNIQUE"),
-            "indexes": sorted(indexes, key=lambda item: item["name"]),
-            "triggers": triggers,
+                ],
+            }
+        )
+    triggers = [
+        {
+            "name": row["name"],
+            "sql": _normalize_sql(row["sql"]),
         }
+        for row in conn.exec_driver_sql(
+            "SELECT name, sql FROM sqlite_master "
+            "WHERE type='trigger' AND tbl_name=? ORDER BY name",
+            (table,),
+        ).mappings()
+    ]
+    return {
+        "name": table,
+        "sql": _normalize_sql(table_sql),
+        "columns": [
+            {
+                "position": row["cid"],
+                "name": row["name"],
+                "type": row["type"],
+                "nullable": not bool(row["notnull"]),
+                "default": row["dflt_value"],
+                "primary_key_position": row["pk"],
+            }
+            for row in conn.exec_driver_sql(
+                f"PRAGMA table_info({quoted_table})"
+            ).mappings()
+        ],
+        "foreign_keys": sorted(
+            (
+                {
+                    "id": row["id"],
+                    "sequence": row["seq"],
+                    "source_table": table,
+                    "source_column": row["from"],
+                    "target_table": row["table"],
+                    "target_column": row["to"],
+                    "on_update": row["on_update"],
+                    "on_delete": row["on_delete"],
+                    "match": row["match"],
+                }
+                for row in conn.exec_driver_sql(
+                    f"PRAGMA foreign_key_list({quoted_table})"
+                ).mappings()
+            ),
+            key=lambda item: (
+                item["source_column"], item["target_table"], item["target_column"]
+            ),
+        ),
+        "check_constraints": _constraint_expressions(table_sql, "CHECK"),
+        "unique_constraints": _constraint_expressions(table_sql, "UNIQUE"),
+        "indexes": sorted(indexes, key=lambda item: item["name"]),
+        "triggers": triggers,
+    }
+
+
+def _collect_p1_schema_manifest(conn: Any) -> dict[str, Any]:
+    tables = {
+        table: _collect_single_table_manifest(conn, table)
+        for table in sorted(_P1_TABLE_COLUMNS)
+    }
     return {"manifest_version": _P1_MANIFEST_VERSION, "tables": tables}
+
+
+def _collect_p2_schema_manifest(conn: Any) -> dict[str, Any]:
+    tables = {
+        table: _collect_single_table_manifest(conn, table)
+        for table in sorted(_P2_TABLE_COLUMNS)
+    }
+    return {"manifest_version": _P2_MANIFEST_VERSION, "tables": tables}
 
 
 def _install_explicit_provenance_p1_runtime_objects(engine: Engine) -> None:
@@ -339,6 +385,63 @@ def explicit_provenance_p1_schema_manifest(engine: Engine) -> dict[str, Any]:
         return _collect_p1_schema_manifest(conn)
 
 
+@lru_cache(maxsize=1)
+def _expected_p2_schema_manifest() -> dict[str, Any]:
+    """Build the approved P2 manifest in an isolated reference database.
+
+    Uses the same ``Base.metadata.create_all`` reference technique as P1 so
+    the comparison covers columns, types, nullability, PK, FKs, ON DELETE,
+    CHECK/UNIQUE constraints, indexes, and defaults structurally rather than
+    by hand-maintained duplication.
+    """
+
+    reference = create_engine("sqlite:///:memory:", future=True)
+    try:
+        Base.metadata.create_all(reference)
+        with reference.connect() as conn:
+            return _collect_p2_schema_manifest(conn)
+    finally:
+        reference.dispose()
+
+
+def preflight_explicit_provenance_p2_schema(engine: Engine) -> str:
+    """Fully validate existing P2 DDL without mutating or repairing the target.
+
+    Must be called strictly after :func:`preflight_explicit_provenance_p1_schema`
+    for the same engine and before any DDL — see the P2 preflight ordering
+    contract in docs/explicit-provenance-stage-p2.md.
+    """
+
+    with engine.connect() as conn:
+        existing = _p2_existing_tables(conn)
+        if not existing:
+            return "ABSENT_CREATE_REQUIRED"
+        actual = _collect_p2_schema_manifest(conn)
+    expected = _expected_p2_schema_manifest()
+    if actual != expected:
+        raise RuntimeError(
+            "ERROR_INCOMPATIBLE_P2_SCHEMA:"
+            f"expected={_manifest_digest(expected)}:actual={_manifest_digest(actual)}"
+        )
+    return "P2_SCHEMA_READY"
+
+
+def _validate_p2_runtime_manifest(engine: Engine) -> None:
+    state = preflight_explicit_provenance_p2_schema(engine)
+    if state != "P2_SCHEMA_READY":
+        raise RuntimeError(f"ERROR_INCOMPATIBLE_P2_SCHEMA:state={state}")
+
+
+def explicit_provenance_p2_schema_manifest(engine: Engine) -> dict[str, Any]:
+    """Return the complete versioned P2 manifest used by fail-closed preflight."""
+
+    with engine.connect() as conn:
+        existing = _p2_existing_tables(conn)
+        if existing != set(_P2_TABLE_COLUMNS):
+            raise RuntimeError("ERROR_PARTIAL_P2_SCHEMA:manifest_unavailable")
+        return _collect_p2_schema_manifest(conn)
+
+
 def _apply_sqlite_pragmas(dbapi_connection: Any, _connection_record: Any) -> None:
     """Set per-connection SQLite PRAGMAs.
 
@@ -381,10 +484,26 @@ def make_sync_engine(path: Path) -> Engine:
 
 
 def init_models_sync(engine: Engine) -> None:
-    """Create all tables (idempotent) using a sync engine connection."""
+    """Create all tables (idempotent) using a sync engine connection.
+
+    Preflight ordering is a hard contract (docs/explicit-provenance-stage-p2.md):
+    both the P1 and the P2 schema preflight run — read-only — *before* any DDL
+    executes. Either raising aborts the whole call before a single mutation, so
+    an incompatible P2 table can never let P1 (or vice-versa) get created/mutated.
+    """
     p1_state = preflight_explicit_provenance_p1_schema(engine)
+    p2_state = preflight_explicit_provenance_p2_schema(engine)
+
+    # The P2 table is deliberately excluded from every generic/broad create_all
+    # path below; it is only ever created via its own controlled branch after
+    # both preflights have passed.
+    non_p2_tables = [
+        table for table in Base.metadata.sorted_tables
+        if table.name not in _P2_TABLE_COLUMNS
+    ]
+
     if p1_state == "ABSENT_CREATE_REQUIRED":
-        Base.metadata.create_all(engine)
+        Base.metadata.create_all(engine, tables=non_p2_tables)
         _install_explicit_provenance_p1_runtime_objects(engine)
         _validate_p1_runtime_manifest(engine)
     elif p1_state == "P1_SCHEMA_READY":
@@ -392,12 +511,21 @@ def init_models_sync(engine: Engine) -> None:
         # EXISTS repair, trigger installation, or P1 sqlite_master mutation.
         _validate_p1_runtime_manifest(engine)
         # Preserve the pre-existing additive migration contract for legacy
-        # tables without ever invoking create_all or create on a P1 table.
+        # tables without ever invoking create_all or create on a P1 or P2 table.
         for table in Base.metadata.sorted_tables:
-            if table.name not in _P1_TABLE_COLUMNS:
+            if table.name not in _P1_TABLE_COLUMNS and table.name not in _P2_TABLE_COLUMNS:
                 table.create(engine, checkfirst=True)
     else:  # Defensive: preflight raises for every non-ready existing state.
         raise RuntimeError(f"ERROR_INCOMPATIBLE_P1_SCHEMA:state={p1_state}")
+
+    if p2_state == "ABSENT_CREATE_REQUIRED":
+        Base.metadata.tables["truth_legacy_migration_map"].create(engine, checkfirst=True)
+        _validate_p2_runtime_manifest(engine)
+    elif p2_state == "P2_SCHEMA_READY":
+        # Deliberately read-only for existing P2 DDL, same contract as P1.
+        _validate_p2_runtime_manifest(engine)
+    else:  # Defensive: preflight raises for every non-ready existing state.
+        raise RuntimeError(f"ERROR_INCOMPATIBLE_P2_SCHEMA:state={p2_state}")
 
     # ``create_all`` does not ALTER existing SQLite tables. Keep this additive
     # migration idempotent so older local databases can load resumes safely.

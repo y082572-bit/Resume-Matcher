@@ -23,6 +23,10 @@ P1_TABLES = {
     "truth_evidence",
     "truth_permissions",
 }
+# Explicit Provenance P2 (see docs/explicit-provenance-stage-p2.md) adds exactly
+# one more truth_-prefixed table on top of the P1 foundation. Tracked separately
+# so the truth_% assertion below still fails on any *unexpected* truth_ table.
+P2_TABLES = {"truth_legacy_migration_map"}
 
 
 def _sqlite_master_snapshot(engine):
@@ -239,7 +243,7 @@ async def test_upgrade_is_additive_restart_safe_and_does_not_backfill(tmp_path):
             connection.exec_driver_sql(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'truth_%'"
             ).scalars()
-        ) == P1_TABLES
+        ) == P1_TABLES | P2_TABLES
         assert all(
             connection.exec_driver_sql(f"SELECT COUNT(*) FROM {table}").scalar_one() == 0
             for table in P1_TABLES

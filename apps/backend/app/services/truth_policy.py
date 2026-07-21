@@ -9,7 +9,15 @@ from app.schemas.truth_fact import (
     Transferability,
     TransformationOperation,
 )
-from app.services.truth_fingerprint import POLICY_REGISTRY_VERSION
+
+#: Registry-local policy version. Deliberately independent of
+#: ``truth_fingerprint.POLICY_REGISTRY_VERSION`` (which versions the overall
+#: Truth snapshot projection for P1 persistence, a different concern): this
+#: constant versions only the ``TransformationPolicy`` content below, and
+#: must be bumped whenever ``allowed_operations``/``allowed_target_scopes``
+#: change for any fact_type. Bumped to v2 in remediation R2 for the
+#: ACHIEVEMENT/FLATTEN_FOR_LOWER_ROLE addition.
+POLICY_REGISTRY_VERSION = "truth-transformation-policy-v2"
 
 
 @dataclass(frozen=True)
@@ -81,6 +89,18 @@ class TruthTransformationPolicyRegistry:
                 TransformationOperation.REORDER,
             }
         )
+        # ACHIEVEMENT only: a narrative fact_type whose value is a
+        # free-text accomplishment description, never a company name,
+        # employment period, formal role title, or a protected number.
+        # FLATTEN_FOR_LOWER_ROLE changes only how that description is
+        # presented (e.g. de-emphasizing scope of ownership for a lower
+        # target role); it cannot alter the fact's truth, its assigned
+        # employment, or create a new competency. Deliberately not added to
+        # the shared `narrative` set: RESPONSIBILITY/SKILL/TOOL/TECHNOLOGY/
+        # SUMMARY do not gain this operation.
+        achievement_narrative = narrative | frozenset(
+            {TransformationOperation.FLATTEN_FOR_LOWER_ROLE}
+        )
         self._policies = {
             "COMPANY": TransformationPolicy(
                 "COMPANY", copy_only, frozenset({"EMPLOYMENT_HEADER"})
@@ -95,7 +115,7 @@ class TruthTransformationPolicyRegistry:
                 "RESPONSIBILITY", narrative, frozenset({"EXPERIENCE"})
             ),
             "ACHIEVEMENT": TransformationPolicy(
-                "ACHIEVEMENT", narrative, frozenset({"EXPERIENCE", "PROJECT"})
+                "ACHIEVEMENT", achievement_narrative, frozenset({"EXPERIENCE", "PROJECT"})
             ),
             "SKILL": TransformationPolicy(
                 "SKILL", narrative, frozenset({"SUMMARY", "SKILLS", "EXPERIENCE"})

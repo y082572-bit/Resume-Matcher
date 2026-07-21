@@ -84,3 +84,145 @@ def test_exact_intersection_is_allowed() -> None:
         True,
         "EFFECTIVE_PERMISSION_ALLOWED",
     )
+
+
+# --- Remediation R2: narrow FLATTEN_FOR_LOWER_ROLE matrix ------------------
+#
+# Approved minimal matrix: ACHIEVEMENT / {EXPERIENCE, PROJECT} only.
+# ACHIEVEMENT is a free-text accomplishment description -- flattening it
+# changes only presentation level, never the company, employment period,
+# formal role title, a protected number, or the fact's assigned employment.
+# COMPANY, ROLE and EMPLOYMENT_PERIOD are identity/structural fact types and
+# must never gain FLATTEN_FOR_LOWER_ROLE; no other fact_type gains it either.
+
+
+def test_achievement_flatten_for_lower_role_is_allowed_in_experience_scope() -> None:
+    registry = TruthTransformationPolicyRegistry()
+    decision = registry.evaluate(
+        _context(
+            fact_type="ACHIEVEMENT",
+            operation=TransformationOperation.FLATTEN_FOR_LOWER_ROLE,
+            target_scope="EXPERIENCE",
+        ),
+        permission_operations=frozenset({TransformationOperation.FLATTEN_FOR_LOWER_ROLE}),
+        permission_target_scope="EXPERIENCE",
+        permission_active=True,
+    )
+    assert (decision.allowed, decision.reason_code) == (
+        True,
+        "EFFECTIVE_PERMISSION_ALLOWED",
+    )
+
+
+def test_achievement_flatten_for_lower_role_rejects_scope_outside_policy() -> None:
+    """Only ACHIEVEMENT's already-approved target_scopes (EXPERIENCE,
+    PROJECT) may ever grant FLATTEN_FOR_LOWER_ROLE -- an unrelated scope
+    like SUMMARY must still be denied even with an active permission."""
+
+    registry = TruthTransformationPolicyRegistry()
+    decision = registry.evaluate(
+        _context(
+            fact_type="ACHIEVEMENT",
+            operation=TransformationOperation.FLATTEN_FOR_LOWER_ROLE,
+            target_scope="SUMMARY",
+        ),
+        permission_operations=frozenset({TransformationOperation.FLATTEN_FOR_LOWER_ROLE}),
+        permission_target_scope="SUMMARY",
+        permission_active=True,
+    )
+    assert (decision.allowed, decision.reason_code) == (
+        False,
+        "TRANSFORMATION_POLICY_DENIED",
+    )
+
+
+@pytest.mark.parametrize("fact_type", ["COMPANY", "EMPLOYMENT_PERIOD"])
+def test_identity_fact_types_never_allow_flattening(fact_type: str) -> None:
+    registry = TruthTransformationPolicyRegistry()
+    decision = registry.evaluate(
+        _context(
+            fact_type=fact_type,
+            operation=TransformationOperation.FLATTEN_FOR_LOWER_ROLE,
+            target_scope="EMPLOYMENT_HEADER",
+        ),
+        permission_operations=frozenset({TransformationOperation.FLATTEN_FOR_LOWER_ROLE}),
+        permission_target_scope="EMPLOYMENT_HEADER",
+        permission_active=True,
+    )
+    assert (decision.allowed, decision.reason_code) == (
+        False,
+        "TRANSFORMATION_POLICY_DENIED",
+    )
+
+
+def test_fact_type_outside_flattening_matrix_still_denies_flattening() -> None:
+    registry = TruthTransformationPolicyRegistry()
+    decision = registry.evaluate(
+        _context(
+            fact_type="SKILL",
+            operation=TransformationOperation.FLATTEN_FOR_LOWER_ROLE,
+            target_scope="SKILLS",
+        ),
+        permission_operations=frozenset({TransformationOperation.FLATTEN_FOR_LOWER_ROLE}),
+        permission_target_scope="SKILLS",
+        permission_active=True,
+    )
+    assert (decision.allowed, decision.reason_code) == (
+        False,
+        "TRANSFORMATION_POLICY_DENIED",
+    )
+
+
+def test_only_achievement_gains_flatten_for_lower_role() -> None:
+    """No fact_type other than ACHIEVEMENT was accidentally widened."""
+
+    registry = TruthTransformationPolicyRegistry()
+    for fact_type in (
+        "COMPANY",
+        "ROLE",
+        "EMPLOYMENT_PERIOD",
+        "RESPONSIBILITY",
+        "SKILL",
+        "TOOL",
+        "TECHNOLOGY",
+        "SUMMARY",
+    ):
+        policy = registry.get(fact_type)
+        assert policy is not None
+        assert (
+            TransformationOperation.FLATTEN_FOR_LOWER_ROLE not in policy.allowed_operations
+        ), fact_type
+
+    achievement_policy = registry.get("ACHIEVEMENT")
+    assert achievement_policy is not None
+    assert TransformationOperation.FLATTEN_FOR_LOWER_ROLE in achievement_policy.allowed_operations
+
+
+def test_policy_registry_version_was_bumped_for_flattening_change() -> None:
+    assert TruthTransformationPolicyRegistry.version == "truth-transformation-policy-v2"
+
+
+def test_hard_safety_policy_unchanged_for_flatten_for_lower_role() -> None:
+    """HardSafetyPolicy gets no new FLATTEN_FOR_LOWER_ROLE-specific
+    carve-out: REJECTED/ARCHIVED still hard-block it exactly like every
+    other operation, and EXACT_ONLY's CONTROLLED_REPHRASE-only block does
+    not extend to it."""
+
+    rejected = HardSafetyPolicy.evaluate(
+        _context(
+            fact_status=FactStatus.REJECTED,
+            operation=TransformationOperation.FLATTEN_FOR_LOWER_ROLE,
+        )
+    )
+    assert (rejected.allowed, rejected.reason_code) == (
+        False,
+        "HARD_SAFETY_FACT_INELIGIBLE",
+    )
+
+    exact_only = HardSafetyPolicy.evaluate(
+        _context(
+            transferability=Transferability.EXACT_ONLY,
+            operation=TransformationOperation.FLATTEN_FOR_LOWER_ROLE,
+        )
+    )
+    assert (exact_only.allowed, exact_only.reason_code) == (True, "HARD_SAFETY_ALLOWED")

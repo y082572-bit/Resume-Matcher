@@ -43,6 +43,7 @@ from app.services.truth_legacy_classification import (
     classify_category,
 )
 from app.services.truth_library_loader import load_truth_library
+from app.services.truth_policy import EMPLOYMENT_FACT_TYPES
 
 
 class TruthLegacyMigrationError(Exception):
@@ -59,6 +60,16 @@ class PersonEntityTypeMismatchError(TruthLegacyMigrationError):
 
 class LegacyRecordChangedReviewRequiredError(TruthLegacyMigrationError):
     """Raised when a previously migrated legacy record's content changed."""
+
+
+class EmploymentScopeInvariantError(TruthLegacyMigrationError):
+    """Stage P3.5: raised before any fact is created when an approved
+    employment fact_type (``EMPLOYMENT_FACT_TYPES``) would be created with an
+    owner entity, parent, or transferability inconsistent with the
+    EMPLOYMENT_SCOPED invariant. Fail-closed: aborts the whole ``apply()``
+    transaction with zero partial writes rather than creating a fact with a
+    missing or wrong ``employment_scope_entity_id``.
+    """
 
 
 _NAMED_CATEGORY_IDENTITY_FIELD: dict[str, str] = {
@@ -632,6 +643,47 @@ def dry_run(
     return report
 
 
+async def _resolve_employment_scope_entity_id(
+    *,
+    session: Any,
+    fact_type: str,
+    transferability: str | None,
+    fact_owner_entity_id: str,
+    person_entity_id: str,
+) -> str | None:
+    """Stage P3.5: decide the new fact's ``employment_scope_entity_id``.
+
+    Returns ``fact_owner_entity_id`` only when *all* of the following hold
+    simultaneously: ``fact_type`` is one of the exact, closed
+    ``EMPLOYMENT_FACT_TYPES``; ``transferability`` is ``EMPLOYMENT_SCOPED``;
+    the owner entity exists and is ``EntityType.EMPLOYMENT``; and that
+    employment entity's ``parent_entity_id`` is this ``person_entity_id``.
+    Deliberately does not apply "transferability == EMPLOYMENT_SCOPED implies
+    scope" without also checking fact_type and entity type. Any fact_type in
+    ``EMPLOYMENT_FACT_TYPES`` that fails one of these checks is a data
+    invariant violation and raises ``EmploymentScopeInvariantError`` before
+    any fact row is created (fail-closed, zero partial writes because the
+    caller runs inside one transaction).
+    """
+
+    if fact_type not in EMPLOYMENT_FACT_TYPES:
+        return None
+    if transferability != "EMPLOYMENT_SCOPED":
+        raise EmploymentScopeInvariantError(
+            f"EMPLOYMENT_SCOPE_TRANSFERABILITY_MISMATCH:{fact_type}"
+        )
+    owner_entity = await session.get(TruthEntity, fact_owner_entity_id)
+    if owner_entity is None or owner_entity.entity_type != EntityType.EMPLOYMENT.value:
+        raise EmploymentScopeInvariantError(
+            f"EMPLOYMENT_SCOPE_OWNER_NOT_EMPLOYMENT:{fact_type}:{fact_owner_entity_id}"
+        )
+    if owner_entity.parent_entity_id != person_entity_id:
+        raise EmploymentScopeInvariantError(
+            f"EMPLOYMENT_SCOPE_OWNER_WRONG_PERSON:{fact_type}:{fact_owner_entity_id}"
+        )
+    return fact_owner_entity_id
+
+
 async def apply(
     *,
     database: Any,
@@ -754,6 +806,13 @@ async def apply(
                         key: normalize_truth_text(value) if isinstance(value, str) else value
                         for key, value in planned.fact_value.items()
                     }
+                    employment_scope_entity_id = await _resolve_employment_scope_entity_id(
+                        session=session,
+                        fact_type=planned.fact_type,
+                        transferability=planned.transferability,
+                        fact_owner_entity_id=fact_owner_entity_id,
+                        person_entity_id=person_entity_id,
+                    )
                     created_fact = await repo.create_fact(
                         TruthFactCreate(
                             entity_id=fact_owner_entity_id,
@@ -764,6 +823,7 @@ async def apply(
                             use_in_cv=fact_status == "CONFIRMED",
                             requires_approval=fact_status != "CONFIRMED",
                             transferability=planned.transferability,
+                            employment_scope_entity_id=employment_scope_entity_id,
                             source_reference=f"truth_library:{planned.record_key}",
                         )
                     )

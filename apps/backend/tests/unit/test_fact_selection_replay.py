@@ -123,6 +123,39 @@ def test_fact_content_fingerprint_change_is_stale() -> None:
     assert "fact_content_fingerprint" in stale_fields(previous, current)
 
 
+def test_fact_type_change_is_stale() -> None:
+    """Stage P3.5: fact_type is its own explicit replay field -- a fact_type
+    change must invalidate a previously produced decision even if every
+    other field on the fact is unchanged."""
+
+    fact = _fact(fact_type="SKILL")
+    original = _decide(fact=fact)
+    retyped_fact = _fact(
+        fact_id=fact.fact_id,
+        entity_id=fact.entity_id,
+        fact_type="TOOL",
+        content_fingerprint="e" * 64,
+    )
+    replayed = _decide(fact=retyped_fact)
+
+    previous = replay_input_from_decision(original)
+    current = replay_input_from_decision(replayed)
+    assert is_decision_stale(previous, current)
+    assert "fact_type" in stale_fields(previous, current)
+
+
+def test_identical_fact_type_preserves_replay() -> None:
+    fact = _fact(fact_type="SKILL")
+    target_context = _target_context()
+    first = _decide(fact=fact, target_context=target_context)
+    second = _decide(fact=fact, target_context=target_context)
+
+    previous = replay_input_from_decision(first)
+    current = replay_input_from_decision(second)
+    assert not is_decision_stale(previous, current)
+    assert stale_fields(previous, current) == ()
+
+
 def test_permission_snapshot_change_is_stale() -> None:
     from app.schemas.truth_fact import PermissionStatus, TruthPermissionRead
 
@@ -218,6 +251,18 @@ def test_no_hidden_current_time_in_select_fact_or_stale_check() -> None:
         assert parameter.default is inspect.Parameter.empty
 
 
+def test_decision_carries_fact_type_directly_from_the_fact() -> None:
+    fact = _fact(fact_type="TECHNOLOGY")
+    decision = _decide(fact=fact)
+    assert decision.fact_type == "TECHNOLOGY"
+
+
+def test_selection_policy_version_v3_is_used_by_default() -> None:
+    assert SELECTION_POLICY_VERSION == "fact-selection-policy-v3"
+    decision = _decide(fact=_fact())
+    assert decision.selection_policy_version == "fact-selection-policy-v3"
+
+
 def test_transformation_policy_version_is_populated_from_registry() -> None:
     decision = _decide(fact=_fact())
     assert decision.transformation_policy_version == TruthTransformationPolicyRegistry().version
@@ -232,6 +277,7 @@ def test_decision_fingerprint_changes_with_transformation_policy_version() -> No
         selection_policy_version=SELECTION_POLICY_VERSION,
         fact_id=uuid4(),
         entity_id=uuid4(),
+        fact_type="SKILL",
         fact_revision=1,
         fact_content_fingerprint="a" * 64,
         target_context_fingerprint="b" * 64,

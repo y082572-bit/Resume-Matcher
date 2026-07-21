@@ -173,8 +173,9 @@ def test_fact_type_outside_flattening_matrix_still_denies_flattening() -> None:
     )
 
 
-def test_only_achievement_gains_flatten_for_lower_role() -> None:
-    """No fact_type other than ACHIEVEMENT was accidentally widened."""
+def test_only_achievement_and_employment_numeric_result_gain_flatten_for_lower_role() -> None:
+    """No fact_type other than ACHIEVEMENT/EMPLOYMENT_NUMERIC_RESULT was
+    accidentally widened."""
 
     registry = TruthTransformationPolicyRegistry()
     for fact_type in (
@@ -186,6 +187,9 @@ def test_only_achievement_gains_flatten_for_lower_role() -> None:
         "TOOL",
         "TECHNOLOGY",
         "SUMMARY",
+        "EMPLOYMENT_ROLE",
+        "EMPLOYMENT_ACTIVITY",
+        "EMPLOYMENT_RESPONSIBILITY_SCALE",
     ):
         policy = registry.get(fact_type)
         assert policy is not None
@@ -193,13 +197,112 @@ def test_only_achievement_gains_flatten_for_lower_role() -> None:
             TransformationOperation.FLATTEN_FOR_LOWER_ROLE not in policy.allowed_operations
         ), fact_type
 
-    achievement_policy = registry.get("ACHIEVEMENT")
-    assert achievement_policy is not None
-    assert TransformationOperation.FLATTEN_FOR_LOWER_ROLE in achievement_policy.allowed_operations
+    for fact_type in ("ACHIEVEMENT", "EMPLOYMENT_NUMERIC_RESULT"):
+        policy = registry.get(fact_type)
+        assert policy is not None
+        assert TransformationOperation.FLATTEN_FOR_LOWER_ROLE in policy.allowed_operations
 
 
-def test_policy_registry_version_was_bumped_for_flattening_change() -> None:
-    assert TruthTransformationPolicyRegistry.version == "truth-transformation-policy-v2"
+def test_policy_registry_version_was_bumped_for_employment_fact_types() -> None:
+    assert TruthTransformationPolicyRegistry.version == "truth-transformation-policy-v3"
+
+
+# --- Stage P3.5: EMPLOYMENT_* fact_type matrix -----------------------------
+
+
+@pytest.mark.parametrize(
+    "fact_type,target_scope",
+    [
+        ("EMPLOYMENT_ROLE", "EMPLOYMENT_HEADER"),
+        ("EMPLOYMENT_ACTIVITY", "EXPERIENCE"),
+        ("EMPLOYMENT_NUMERIC_RESULT", "EXPERIENCE"),
+        ("EMPLOYMENT_RESPONSIBILITY_SCALE", "EXPERIENCE"),
+    ],
+)
+def test_all_four_employment_fact_types_have_a_policy(fact_type: str, target_scope: str) -> None:
+    registry = TruthTransformationPolicyRegistry()
+    policy = registry.get(fact_type)
+    assert policy is not None
+    assert policy.allowed_target_scopes == frozenset({target_scope})
+
+
+def test_employment_role_only_allows_copy_operations() -> None:
+    registry = TruthTransformationPolicyRegistry()
+    policy = registry.get("EMPLOYMENT_ROLE")
+    assert policy is not None
+    assert policy.allowed_operations == frozenset(
+        {TransformationOperation.EXACT_COPY, TransformationOperation.FORMAT_NORMALIZATION}
+    )
+
+
+def test_employment_activity_allows_narrative_operations_without_flatten() -> None:
+    registry = TruthTransformationPolicyRegistry()
+    policy = registry.get("EMPLOYMENT_ACTIVITY")
+    assert policy is not None
+    assert policy.allowed_operations == frozenset(
+        {
+            TransformationOperation.EXACT_COPY,
+            TransformationOperation.CONTROLLED_REPHRASE,
+            TransformationOperation.OMIT,
+            TransformationOperation.REORDER,
+        }
+    )
+
+
+def test_employment_responsibility_scale_allows_narrative_operations_without_flatten() -> None:
+    registry = TruthTransformationPolicyRegistry()
+    policy = registry.get("EMPLOYMENT_RESPONSIBILITY_SCALE")
+    assert policy is not None
+    assert policy.allowed_operations == frozenset(
+        {
+            TransformationOperation.EXACT_COPY,
+            TransformationOperation.CONTROLLED_REPHRASE,
+            TransformationOperation.OMIT,
+            TransformationOperation.REORDER,
+        }
+    )
+
+
+def test_employment_numeric_result_allows_flatten_for_lower_role() -> None:
+    registry = TruthTransformationPolicyRegistry()
+    policy = registry.get("EMPLOYMENT_NUMERIC_RESULT")
+    assert policy is not None
+    assert policy.allowed_operations == frozenset(
+        {
+            TransformationOperation.EXACT_COPY,
+            TransformationOperation.CONTROLLED_REPHRASE,
+            TransformationOperation.OMIT,
+            TransformationOperation.REORDER,
+            TransformationOperation.FLATTEN_FOR_LOWER_ROLE,
+        }
+    )
+
+
+def test_unknown_employment_fact_type_has_no_policy() -> None:
+    registry = TruthTransformationPolicyRegistry()
+    assert registry.get("EMPLOYMENT_UNKNOWN") is None
+
+
+def test_permission_active_grant_cannot_widen_registry_for_employment_numeric_result() -> None:
+    """An ACTIVE permission naming an operation/scope the registry itself
+    denies must still be denied -- permission narrows, never extends."""
+
+    registry = TruthTransformationPolicyRegistry()
+    decision = registry.evaluate(
+        _context(
+            fact_type="EMPLOYMENT_NUMERIC_RESULT",
+            transferability=Transferability.EMPLOYMENT_SCOPED,
+            operation=TransformationOperation.FLATTEN_FOR_LOWER_ROLE,
+            target_scope="EMPLOYMENT_HEADER",
+        ),
+        permission_operations=frozenset({TransformationOperation.FLATTEN_FOR_LOWER_ROLE}),
+        permission_target_scope="EMPLOYMENT_HEADER",
+        permission_active=True,
+    )
+    assert (decision.allowed, decision.reason_code) == (
+        False,
+        "TRANSFORMATION_POLICY_DENIED",
+    )
 
 
 def test_hard_safety_policy_unchanged_for_flatten_for_lower_role() -> None:

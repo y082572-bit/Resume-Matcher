@@ -213,3 +213,56 @@ uv run python -m app.scripts.migrate_truth_library_to_provenance --apply \
 `--person-entity-id`, `--truth-library-path`, and `--legacy-source-id` are all
 optional overrides of the corresponding settings. No API route or router is
 added — this is a CLI-only bridge.
+
+## Stage P3.5 — `employment_scope_entity_id` compatibility
+
+Stage 10D-A-P3.5 is a narrow **compatibility bugfix**, not a new migration
+schema. P2 always created exactly four real employment fact types —
+`EMPLOYMENT_ROLE`, `EMPLOYMENT_ACTIVITY`, `EMPLOYMENT_NUMERIC_RESULT`,
+`EMPLOYMENT_RESPONSIBILITY_SCALE` (the closed set
+`app.services.truth_policy.EMPLOYMENT_FACT_TYPES`) — with
+`transferability=EMPLOYMENT_SCOPED`, but never populated the
+`TruthFact.employment_scope_entity_id` column P1 already defines. P3.5 closes
+that gap on both sides of time:
+
+- **New data** (any `apply()` run from this stage forward): the fact-creation
+  step in `truth_legacy_migrator.apply()` now sets
+  `employment_scope_entity_id = fact_owner_entity_id` whenever, and only
+  when, all four conditions hold simultaneously — the fact_type is one of the
+  exact `EMPLOYMENT_FACT_TYPES`, `transferability == EMPLOYMENT_SCOPED`, the
+  owner entity exists and is `EntityType.EMPLOYMENT`, and that employment
+  entity's `parent_entity_id` is the `person_entity_id` this `apply()` call is
+  running for. Any approved employment fact_type whose owner/parent/
+  transferability is inconsistent with that invariant raises
+  `EmploymentScopeInvariantError` **before** the fact row is created — the
+  whole `apply()` transaction still rolls back atomically, so this is
+  fail-closed, never a partially-scoped fact.
+- **Historical data** (facts created by a P2 `apply()` run before P3.5):
+  repaired out-of-band by the new
+  `app.services.truth_employment_scope_backfill` module and its CLI,
+  `uv run python -m app.scripts.backfill_employment_scope`. The backfill is
+  deterministic (`--dry-run`/`--apply`, same classification function
+  underneath both), requires an explicit `--person-entity-id` (it never scans
+  or selects a person on its own), and enforces **person isolation**: a fact
+  whose owning `EMPLOYMENT` entity belongs to a different person is visible
+  in the report (`BLOCKED` / `OWNER_NOT_CHILD_OF_PERSON`) but is never
+  eligible and never mutated. Its repair policy version,
+  `EMPLOYMENT_SCOPE_COMPATIBILITY_VERSION = "employment-scope-compat-v1"`,
+  travels on every report; it does not require or create a new SQL table.
+  `apply()` repairs an eligible fact only through the existing, audited
+  `TruthRepository.update_fact` (expected-revision + content-fingerprint
+  enforced) and aborts the entire batch with zero partial writes if any
+  `CONFLICT` or structurally-inconsistent-approved-fact `BLOCKED` item is
+  present.
+
+Both paths converge on the same end state: `fact_id`, `entity_id`,
+`fact_type`, `value_json`, `normalized_value_json`, `source_reference`, and
+every `truth_legacy_migration_map` row (including `target_fact_id`) are
+byte-for-byte unchanged by P3.5. No new fact, entity, or migration map row is
+ever created by the backfill; re-running `apply()` (backfill or P2) against
+unchanged legacy/DB state is a pure no-op replay.
+
+`MIGRATION_SCHEMA_VERSION` **stays `1.0`**. It versions legacy record
+identity and the `legacy_record_key` scheme, which P3.5 does not touch —
+`employment_scope_entity_id` is P1 fact content, not migration identity. A
+version bump would incorrectly imply the identity/record-key scheme changed.

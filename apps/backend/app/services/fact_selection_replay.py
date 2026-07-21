@@ -21,6 +21,7 @@ class FactSelectionReplayInput:
 
     fact_id: UUID
     entity_id: UUID
+    fact_type: str
     fact_revision: int
     fact_content_fingerprint: str
     target_context_fingerprint: str
@@ -36,6 +37,7 @@ def replay_input_from_decision(decision: FactSelectionDecision) -> FactSelection
     return FactSelectionReplayInput(
         fact_id=decision.fact_id,
         entity_id=decision.entity_id,
+        fact_type=decision.fact_type,
         fact_revision=decision.fact_revision,
         fact_content_fingerprint=decision.fact_content_fingerprint,
         target_context_fingerprint=decision.target_context_fingerprint,

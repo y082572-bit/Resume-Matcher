@@ -57,7 +57,11 @@ from app.services.truth_fingerprint import canonical_json_bytes
 from app.services.truth_policy import TruthTransformationPolicyRegistry
 
 
-SELECTION_POLICY_VERSION = "fact-selection-policy-v2"
+#: Bumped to v3 in Stage P3.5: ``FactSelectionDecision.fact_type`` and the
+#: fact_type input to ``compute_decision_fingerprint`` are new explicit,
+#: replay-relevant fields (see ``fact_selection_replay.py``); a fact whose
+#: fact_type changes now invalidates a previously produced decision.
+SELECTION_POLICY_VERSION = "fact-selection-policy-v3"
 TARGET_CONTEXT_FINGERPRINT_VERSION = "fact-selection-target-context-v1"
 DECISION_FINGERPRINT_VERSION = "fact-selection-decision-v1"
 
@@ -457,6 +461,7 @@ def compute_decision_fingerprint(
     transformation_policy_version: str,
     fact_id: object,
     entity_id: object,
+    fact_type: str,
     fact_revision: int,
     fact_content_fingerprint: str,
     target_context_fingerprint: str,
@@ -475,6 +480,10 @@ def compute_decision_fingerprint(
     invalidates a previously produced fingerprint even if
     ``selection_policy_version`` (P3's own decision-logic version) is
     unchanged -- P3 does not rely on someone remembering to bump both.
+    ``fact_type`` is its own explicit input (Stage P3.5): it is also covered
+    by ``fact_content_fingerprint``, but is included directly so a fact_type
+    change is diagnosable in ``stale_fields`` without needing to decode the
+    content fingerprint.
     """
 
     content = {
@@ -482,6 +491,7 @@ def compute_decision_fingerprint(
         "transformation_policy_version": transformation_policy_version,
         "fact_id": str(fact_id),
         "entity_id": str(entity_id),
+        "fact_type": fact_type,
         "fact_revision": fact_revision,
         "fact_content_fingerprint": fact_content_fingerprint,
         "target_context_fingerprint": target_context_fingerprint,
@@ -601,6 +611,7 @@ def select_fact(
         transformation_policy_version=transformation_policy_version,
         fact_id=fact.fact_id,
         entity_id=fact.entity_id,
+        fact_type=fact.fact_type,
         fact_revision=fact.revision,
         fact_content_fingerprint=fact.content_fingerprint,
         target_context_fingerprint=target_context_fingerprint,
@@ -619,6 +630,7 @@ def select_fact(
         person_entity_id=target_context.person_entity_id,
         entity_id=fact.entity_id,
         fact_id=fact.fact_id,
+        fact_type=fact.fact_type,
         fact_revision=fact.revision,
         fact_content_fingerprint=fact.content_fingerprint,
         decision=decision,

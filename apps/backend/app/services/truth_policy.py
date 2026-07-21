@@ -16,8 +16,26 @@ from app.schemas.truth_fact import (
 #: constant versions only the ``TransformationPolicy`` content below, and
 #: must be bumped whenever ``allowed_operations``/``allowed_target_scopes``
 #: change for any fact_type. Bumped to v2 in remediation R2 for the
-#: ACHIEVEMENT/FLATTEN_FOR_LOWER_ROLE addition.
-POLICY_REGISTRY_VERSION = "truth-transformation-policy-v2"
+#: ACHIEVEMENT/FLATTEN_FOR_LOWER_ROLE addition. Bumped to v3 in Stage P3.5
+#: for the four EMPLOYMENT_* fact_type entries below.
+POLICY_REGISTRY_VERSION = "truth-transformation-policy-v3"
+
+#: The exact, closed set of employment fact_types Stage P3.5 recognizes.
+#: This is the single shared source of truth for "is this fact_type an
+#: employment fact_type" -- consulted by this registry, the P2 legacy
+#: migrator's future ``apply()`` (``truth_legacy_migrator.py``), and the
+#: ``truth_employment_scope_backfill`` compatibility tool. Never matched by
+#: prefix or substring: membership is exact-string, closed-set only, so an
+#: unrelated future ``EMPLOYMENT_``-prefixed fact_type is never silently
+#: swept in.
+EMPLOYMENT_FACT_TYPES: frozenset[str] = frozenset(
+    {
+        "EMPLOYMENT_ROLE",
+        "EMPLOYMENT_ACTIVITY",
+        "EMPLOYMENT_NUMERIC_RESULT",
+        "EMPLOYMENT_RESPONSIBILITY_SCALE",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -89,15 +107,17 @@ class TruthTransformationPolicyRegistry:
                 TransformationOperation.REORDER,
             }
         )
-        # ACHIEVEMENT only: a narrative fact_type whose value is a
-        # free-text accomplishment description, never a company name,
-        # employment period, formal role title, or a protected number.
-        # FLATTEN_FOR_LOWER_ROLE changes only how that description is
-        # presented (e.g. de-emphasizing scope of ownership for a lower
-        # target role); it cannot alter the fact's truth, its assigned
-        # employment, or create a new competency. Deliberately not added to
-        # the shared `narrative` set: RESPONSIBILITY/SKILL/TOOL/TECHNOLOGY/
-        # SUMMARY do not gain this operation.
+        # ACHIEVEMENT and EMPLOYMENT_NUMERIC_RESULT only: narrative fact_types
+        # whose value is a free-text accomplishment/numeric-result
+        # description, never a company name, employment period, formal role
+        # title, or a protected number itself. FLATTEN_FOR_LOWER_ROLE changes
+        # only how that description is presented (e.g. de-emphasizing scope
+        # of ownership for a lower target role); it cannot alter the fact's
+        # truth, its assigned employment, or create a new competency.
+        # Deliberately not added to the shared `narrative` set:
+        # RESPONSIBILITY/SKILL/TOOL/TECHNOLOGY/SUMMARY/EMPLOYMENT_ROLE/
+        # EMPLOYMENT_ACTIVITY/EMPLOYMENT_RESPONSIBILITY_SCALE do not gain
+        # this operation.
         achievement_narrative = narrative | frozenset(
             {TransformationOperation.FLATTEN_FOR_LOWER_ROLE}
         )
@@ -128,6 +148,19 @@ class TruthTransformationPolicyRegistry:
             ),
             "SUMMARY": TransformationPolicy(
                 "SUMMARY", narrative, frozenset({"SUMMARY"})
+            ),
+            # -- Stage P3.5: EMPLOYMENT_* fact_types (see EMPLOYMENT_FACT_TYPES) --
+            "EMPLOYMENT_ROLE": TransformationPolicy(
+                "EMPLOYMENT_ROLE", copy_only, frozenset({"EMPLOYMENT_HEADER"})
+            ),
+            "EMPLOYMENT_ACTIVITY": TransformationPolicy(
+                "EMPLOYMENT_ACTIVITY", narrative, frozenset({"EXPERIENCE"})
+            ),
+            "EMPLOYMENT_NUMERIC_RESULT": TransformationPolicy(
+                "EMPLOYMENT_NUMERIC_RESULT", achievement_narrative, frozenset({"EXPERIENCE"})
+            ),
+            "EMPLOYMENT_RESPONSIBILITY_SCALE": TransformationPolicy(
+                "EMPLOYMENT_RESPONSIBILITY_SCALE", narrative, frozenset({"EXPERIENCE"})
             ),
         }
 

@@ -153,6 +153,10 @@ async def test_create_employment_entity_and_facts(database, tmp_path) -> None:
         if row.target_fact_id:
             fact = await _fact(database, row.target_fact_id)
             fact_types.add(fact.fact_type)
+            # Stage P3.5: every employment fact gets employment_scope_entity_id
+            # set to its own owning employment entity on first apply.
+            assert fact.entity_id == root_row.target_entity_id
+            assert fact.employment_scope_entity_id == root_row.target_entity_id
     assert {"EMPLOYMENT_ROLE", "EMPLOYMENT_ACTIVITY", "EMPLOYMENT_NUMERIC_RESULT", "EMPLOYMENT_RESPONSIBILITY_SCALE"} <= fact_types
     assert report.counts.MIGRATABLE == len(employment_rows)
 
@@ -287,6 +291,39 @@ async def test_employment_scope_and_parent_entity_id_correct(database, tmp_path)
     activity_fact = await _fact(database, activity_row.target_fact_id)
     assert activity_fact.entity_id == employment_entity_id
     assert activity_fact.transferability == "EMPLOYMENT_SCOPED"
+    assert activity_fact.employment_scope_entity_id == employment_entity_id
+
+
+@pytest.mark.asyncio
+async def test_employment_scope_entity_id_stable_across_idempotent_replay(database, tmp_path) -> None:
+    """Stage P3.5: re-applying the exact same legacy record must reuse the
+    previously assigned target ids and must not touch employment_scope_entity_id
+    a second time (no duplicate facts, no duplicate map rows)."""
+
+    person_id = str(uuid4())
+    path = _write_library(
+        tmp_path,
+        _base_kategorie(
+            doswiadczenieZawodowe={
+                "wpisy": [
+                    {
+                        "id": "dz-1", "firma": "Acme", "stanowisko": "Analyst",
+                        "status": APPROVED, "uzywacWCV": True,
+                    }
+                ]
+            }
+        ),
+    )
+    first = await apply(database=database, truth_library_path=path, person_entity_id=person_id, legacy_source_id=SOURCE_ID)
+    second = await apply(database=database, truth_library_path=path, person_entity_id=person_id, legacy_source_id=SOURCE_ID)
+
+    assert len(first.created_fact_ids) == 1
+    assert second.created_fact_ids == []  # reused, not recreated
+    rows = await _map_rows(database, category="doswiadczenieZawodowe")
+    root_row = next(r for r in rows if r.legacy_record_key == "doswiadczenieZawodowe:dz-1:1.0")
+    fact = await _fact(database, root_row.target_fact_id)
+    assert fact.employment_scope_entity_id == root_row.target_entity_id
+    assert fact.revision == 1
 
 
 @pytest.mark.asyncio

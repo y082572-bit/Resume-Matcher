@@ -153,8 +153,9 @@ widen what P1 already denies:
 `decision_fingerprint` is a SHA-256 hex digest over a canonical JSON
 projection of every input that can affect the decision:
 `selection_policy_version`, `transformation_policy_version`, `fact_id`,
-`entity_id`, `fact_revision`, `fact_content_fingerprint`,
-`target_context_fingerprint`, `requested_operation`, `requested_target_scope`,
+`entity_id`, `fact_type` (added in Stage P3.5), `fact_revision`,
+`fact_content_fingerprint`, `target_context_fingerprint`,
+`requested_operation`, `requested_target_scope`,
 `permission_snapshot_fingerprint`, and the explicit `evaluation_time`.
 There is no random UUID and no implicit `datetime.now()` anywhere in
 `FactSelectionDecision` or in `select_fact()` -- `evaluation_time` is a
@@ -167,7 +168,8 @@ hashed with the existing `canonical_json_bytes` helper from
 `truth_fingerprint.py`.
 
 `selection_policy_version` (module constant `SELECTION_POLICY_VERSION`,
-currently `"fact-selection-policy-v2"`) is a stable identifier for the exact
+currently `"fact-selection-policy-v3"`, bumped from `v2` in Stage P3.5 for the
+new `fact_type` field) is a stable identifier for the exact
 decision logic in `fact_selection_policy.py`, including the P1 fact-type
 policy gate added in remediation R1. Any future change to *what* decides a
 `FactSelectionDecision` -- including a change to how the P1 gate is
@@ -194,13 +196,20 @@ changes.
 ## Replay and stale detection
 
 `fact_selection_replay.py` is a set of pure functions with no clock and no
-lookup. A previously produced decision is **stale** if any of these nine
-fields differs from the current values: `fact_id`, `entity_id`,
-`fact_revision`, `fact_content_fingerprint`, `target_context_fingerprint`,
-`requested_operation`, `selection_policy_version`,
+lookup. A previously produced decision is **stale** if any of these ten
+fields differs from the current values: `fact_id`, `entity_id`, `fact_type`
+(added in Stage P3.5), `fact_revision`, `fact_content_fingerprint`,
+`target_context_fingerprint`, `requested_operation`, `selection_policy_version`,
 `transformation_policy_version` (added in remediation R2),
 `permission_snapshot_fingerprint`. `evaluation_time` is deliberately not
 part of staleness comparison -- see "MVP limitations" below.
+
+`fact_type` is sourced directly from `TruthFactRead.fact_type` -- never
+looked up or inferred -- and validated with the existing `FACT_TYPE_PATTERN`.
+It is deliberately its own explicit replay/fingerprint field even though a
+fact_type change also always changes `fact_content_fingerprint`: keeping it
+separate makes a fact_type change individually diagnosable in
+`stale_fields()` without decoding the content fingerprint.
 
 Calling `select_fact()` twice with the exact same full input always
 produces an identical `decision_fingerprint` and an identical
@@ -224,16 +233,18 @@ produces an identical `decision_fingerprint` and an identical
   time-sensitive re-evaluation, rather than relying on staleness detection
   for that case.
 - The P1 `TruthTransformationPolicyRegistry` (`app/services/truth_policy.py`)
-  registers `FLATTEN_FOR_LOWER_ROLE` for exactly one `fact_type` --
-  `ACHIEVEMENT`, in `{EXPERIENCE, PROJECT}` scope -- added in remediation
-  R2 for controlled presentation-level flattening of achievement
-  descriptions when applying to a lower-seniority role. No other
-  `fact_type` gains it: `COMPANY`, `ROLE` and `EMPLOYMENT_PERIOD` are
-  identity/structural data (a company name, an employment period, a formal
-  role title) and must never have their presentation level altered by
-  flattening, so they stay copy-only. `RESPONSIBILITY`, `SKILL`, `TOOL`,
-  `TECHNOLOGY` and `SUMMARY` were not included in this remediation and
-  remain exactly as narrow as before. Even for `ACHIEVEMENT`,
+  registers `FLATTEN_FOR_LOWER_ROLE` for exactly two `fact_type`s --
+  `ACHIEVEMENT`, in `{EXPERIENCE, PROJECT}` scope (added in remediation R2),
+  and `EMPLOYMENT_NUMERIC_RESULT`, in `{EXPERIENCE}` scope (added in Stage
+  P3.5) -- for controlled presentation-level flattening of an
+  achievement/numeric-result description when applying to a lower-seniority
+  role. No other `fact_type` gains it: `COMPANY`, `ROLE`,
+  `EMPLOYMENT_PERIOD`, and `EMPLOYMENT_ROLE` are identity/structural data (a
+  company name, an employment period, a formal role title) and must never
+  have their presentation level altered by flattening, so they stay
+  copy-only. `RESPONSIBILITY`, `SKILL`, `TOOL`, `TECHNOLOGY`, `SUMMARY`,
+  `EMPLOYMENT_ACTIVITY`, and `EMPLOYMENT_RESPONSIBILITY_SCALE` remain exactly
+  as narrow as before. Even for `ACHIEVEMENT`/`EMPLOYMENT_NUMERIC_RESULT`,
   `FLATTEN_FOR_LOWER_ROLE` still requires an `ACTIVE` `TruthPermission` that
   passes every check in the permission gate (same `fact_id`, matching
   `target_scope`, `allowed_operations` containing the operation, matching
@@ -260,6 +271,47 @@ Added in remediation R1, alongside the existing reason codes:
 All three always produce `BLOCKED`, never `APPROVAL_REQUIRED` -- a P1
 policy denial is a hard rule, not a request for human review, and no
 `TruthPermission` is consulted once one of these has fired.
+
+## Stage P3.5 — employment fact_type compatibility
+
+Stage P3.5 (see `docs/explicit-provenance-stage-p2.md` for the P2 side) adds
+four real employment fact_types to the P1
+`TruthTransformationPolicyRegistry` (`app/services/truth_policy.py`,
+`POLICY_REGISTRY_VERSION` bumped from `truth-transformation-policy-v2` to
+`truth-transformation-policy-v3`):
+
+| fact_type                          | `allowed_target_scopes` | `allowed_operations` |
+|-------------------------------------|--------------------------|------------------------|
+| `EMPLOYMENT_ROLE`                   | `EMPLOYMENT_HEADER`     | `EXACT_COPY`, `FORMAT_NORMALIZATION` |
+| `EMPLOYMENT_ACTIVITY`               | `EXPERIENCE`            | `EXACT_COPY`, `CONTROLLED_REPHRASE`, `OMIT`, `REORDER` |
+| `EMPLOYMENT_NUMERIC_RESULT`         | `EXPERIENCE`            | `EXACT_COPY`, `CONTROLLED_REPHRASE`, `OMIT`, `REORDER`, `FLATTEN_FOR_LOWER_ROLE` |
+| `EMPLOYMENT_RESPONSIBILITY_SCALE`   | `EXPERIENCE`            | `EXACT_COPY`, `CONTROLLED_REPHRASE`, `OMIT`, `REORDER` |
+
+Only `EMPLOYMENT_NUMERIC_RESULT` gains `FLATTEN_FOR_LOWER_ROLE` (alongside
+the pre-existing `ACHIEVEMENT`), for the same reason `ACHIEVEMENT` gained it
+in remediation R2: it is a narrative, free-text description whose
+presentation level can be de-emphasized without altering the underlying
+number. `EMPLOYMENT_ROLE`, `EMPLOYMENT_ACTIVITY`, and
+`EMPLOYMENT_RESPONSIBILITY_SCALE` do not gain it. As with every other
+`fact_type`, an `ACTIVE` `TruthPermission` naming `FLATTEN_FOR_LOWER_ROLE` for
+`EMPLOYMENT_RESPONSIBILITY_SCALE` (or any fact_type the registry has not
+granted it to) is still denied at gate 3 (`OPERATION_NOT_ALLOWED_BY_POLICY`)
+-- permission narrows what the registry allows, it never extends it.
+
+`FactSelectionDecision.fact_type` (new field, see "Decision fingerprint" and
+"Replay and stale detection" above) means these four fact_types can now
+actually reach `SELECTED`: previously, an employment fact could never pass
+the `EMPLOYMENT_SCOPED` transferability gate because
+`employment_scope_entity_id` was never populated (see
+`docs/explicit-provenance-stage-p2.md`). Once P2's `apply()` or the P3.5
+backfill sets that field correctly, `select_fact()` needs no P3 code change
+at all to select an employment fact for an allowed operation -- the existing
+pipeline (eligibility -> transferability -> P1 fact-type policy -> permission
+-> CPE advisory) already handles it.
+
+P3.5 adds no new SQL table, ORM model, router, or persistent decision log.
+`FactSelectionDecision` remains a plain, in-memory Pydantic value exactly as
+before; only its field set and the two version constants changed.
 
 ## Boundary with P4
 

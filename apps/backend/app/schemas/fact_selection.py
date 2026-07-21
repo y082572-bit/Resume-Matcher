@@ -18,7 +18,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, UUID4, field_validator, model_validator
 
 from app.schemas.truth_entity import SHA256_PATTERN, _require_timezone
-from app.schemas.truth_fact import Transferability, TransformationOperation
+from app.schemas.truth_fact import FACT_TYPE_PATTERN, Transferability, TransformationOperation
 
 
 FACT_SELECTION_SCHEMA_VERSION = "1.0"
@@ -170,6 +170,7 @@ class FactSelectionDecision(BaseModel):
 
     entity_id: UUID4
     fact_id: UUID4
+    fact_type: str = Field(pattern=FACT_TYPE_PATTERN)
     fact_revision: int = Field(ge=1)
     fact_content_fingerprint: str = Field(pattern=SHA256_PATTERN)
 

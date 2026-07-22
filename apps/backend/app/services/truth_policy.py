@@ -17,8 +17,10 @@ from app.schemas.truth_fact import (
 #: must be bumped whenever ``allowed_operations``/``allowed_target_scopes``
 #: change for any fact_type. Bumped to v2 in remediation R2 for the
 #: ACHIEVEMENT/FLATTEN_FOR_LOWER_ROLE addition. Bumped to v3 in Stage P3.5
-#: for the four EMPLOYMENT_* fact_type entries below.
-POLICY_REGISTRY_VERSION = "truth-transformation-policy-v3"
+#: for the four EMPLOYMENT_* fact_type entries below. Bumped to v4 in Stage
+#: P4.5a for the four copy-only, non-employment fact_type entries
+#: (EDUCATION_DEGREE/CERTIFICATION_NAME/COURSE_NAME/LANGUAGE_NAME).
+POLICY_REGISTRY_VERSION = "truth-transformation-policy-v4"
 
 #: The exact, closed set of employment fact_types Stage P3.5 recognizes.
 #: This is the single shared source of truth for "is this fact_type an
@@ -161,6 +163,21 @@ class TruthTransformationPolicyRegistry:
             ),
             "EMPLOYMENT_RESPONSIBILITY_SCALE": TransformationPolicy(
                 "EMPLOYMENT_RESPONSIBILITY_SCALE", narrative, frozenset({"EXPERIENCE"})
+            ),
+            # -- Stage P4.5a: non-employment CV sections. Copy-only: no
+            # CONTROLLED_REPHRASE, no FLATTEN_FOR_LOWER_ROLE, no COMBINE/SPLIT/
+            # SUMMARIZE/ELEVATE. Each has exactly one target_scope. --
+            "EDUCATION_DEGREE": TransformationPolicy(
+                "EDUCATION_DEGREE", copy_only, frozenset({"EDUCATION"})
+            ),
+            "CERTIFICATION_NAME": TransformationPolicy(
+                "CERTIFICATION_NAME", copy_only, frozenset({"CERTIFICATIONS"})
+            ),
+            "COURSE_NAME": TransformationPolicy(
+                "COURSE_NAME", copy_only, frozenset({"COURSES"})
+            ),
+            "LANGUAGE_NAME": TransformationPolicy(
+                "LANGUAGE_NAME", copy_only, frozenset({"LANGUAGES"})
             ),
         }
 

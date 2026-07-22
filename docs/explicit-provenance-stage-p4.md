@@ -60,6 +60,11 @@ fact_type actually uses for grouping. A missing entry is a fail-closed
 `INVALID_INPUT_SNAPSHOT` (`plan=None`), never a database lookup — P4 has no
 database access to fall back on.
 
+Since Stage P4.5a, `entity_types` is also independently checked against a
+closed owner-`EntityType` policy for four fact_types (see **Owner EntityType
+policy** below) — this is a second, distinct check from the
+"is there an entry at all" one above.
+
 ## No database I/O, no text generation
 
 `build_cv_content_plan`, `validate_cv_content_plan`, and the replay helpers
@@ -91,10 +96,16 @@ Defined in `app/schemas/cv_content_plan.py`, all closed (`extra="forbid"`):
 - `CvContentPlanValidationResult` / `CvContentPlanViolation` — validator
   output.
 
-`CV_CONTENT_PLAN_SCHEMA_VERSION = "cv-content-plan-schema-v1"` and
-`CV_CONTENT_POLICY_VERSION = "cv-content-policy-v1"` are P4's own versions,
-distinct from `FACT_SELECTION_SCHEMA_VERSION` / `SELECTION_POLICY_VERSION`.
-Both participate in the plan's fingerprints.
+`CV_CONTENT_PLAN_SCHEMA_VERSION = "cv-content-plan-schema-v2"` (bumped from
+`v1` in Stage P4.5a for the new `CvSection.COURSES` member) and
+`CV_CONTENT_POLICY_VERSION = "cv-content-policy-v2"` (bumped from `v1` in
+Stage P4.5a for the four new `FACT_TYPE_SECTION_MAP`/`FACT_TYPE_PRIORITY`
+entries and the new `SECTION_ORDER` position) are P4's own versions, distinct
+from `FACT_SELECTION_SCHEMA_VERSION` / `SELECTION_POLICY_VERSION`. Both
+participate in the plan's fingerprints — no stale `"cv-content-plan-schema-v1"`
+literal remains active anywhere in the schema or the builder; the old value
+is only ever rejected by the `Literal["cv-content-plan-schema-v2"]` field
+constraint on `CvContentPlan.schema_version`.
 
 ## Section mapping
 
@@ -102,12 +113,75 @@ Both participate in the plan's fingerprints.
 dict keyed by `(fact_type, requested_target_scope)`. There is no
 `startswith`/substring matching and no default/fallback section: a
 combination outside the table — including `SKILL`@`SUMMARY`, or any
-`EDUCATION`/`CERTIFICATION`/`COURSE`/`LANGUAGE`/`AWARD` fact_type — is
-`SECTION_NOT_ALLOWED_FOR_FACT_TYPE`, always.
+`AWARD`/`AWARD_NAME` fact_type — is `SECTION_NOT_ALLOWED_FOR_FACT_TYPE`,
+always.
 
 `SECTION_ORDER` is an explicit, versioned tuple. `CvContentPlan.sections`
 always contains exactly one entry per `CvSection`, in that order, even when
-`skipped_empty=True`.
+`skipped_empty=True`:
+
+```
+PROFILE, COMPETENCIES, EXPERIENCE, ACHIEVEMENTS, EDUCATION, CERTIFICATIONS,
+COURSES, LANGUAGES, TOOLS_TECHNOLOGIES
+```
+
+`CvSection.COURSES` (Stage P4.5a) sits between `CERTIFICATIONS` and
+`LANGUAGES`; every other section keeps its previous relative order — the
+addition only ever inserts a new position, it never reorders existing ones.
+
+### Stage P4.5a: non-employment CV section fact_types
+
+Four real, closed `(fact_type, target_scope)` → `(CvSection, "flat")`
+mappings were added, mirroring the P1 policy entries from
+`docs/explicit-provenance-stage-p3.md`:
+
+| fact_type              | target_scope     | `CvSection`       |
+|-------------------------|------------------|---------------------|
+| `EDUCATION_DEGREE`      | `EDUCATION`      | `EDUCATION`         |
+| `CERTIFICATION_NAME`    | `CERTIFICATIONS` | `CERTIFICATIONS`    |
+| `COURSE_NAME`           | `COURSES`        | `COURSES`           |
+| `LANGUAGE_NAME`         | `LANGUAGES`      | `LANGUAGES`         |
+
+All four are `"flat"` bucket placements — none of them ever groups into a
+`CvExperienceEntryPlan`. `COURSE_NAME` is deliberately mapped *only* to
+`COURSES`: `("COURSE_NAME", "EDUCATION")`, `("COURSE_NAME", "CERTIFICATIONS")`,
+and `("COURSE_NAME", "ACHIEVEMENTS")` are all absent from
+`FACT_TYPE_SECTION_MAP` and therefore fail closed to
+`SECTION_NOT_ALLOWED_FOR_FACT_TYPE` — there is no fallback path by which a
+course could ever land in `EDUCATION` or `CERTIFICATIONS`.
+
+`FACT_TYPE_PRIORITY` gained four new, unique, explicit integer entries (one
+per fact_type above), used only to order facts *within* the `COURSES`/
+`EDUCATION`/`CERTIFICATIONS`/`LANGUAGES` flat buckets when more than one fact
+lands in the same section — never derived from `Transferability`, CPE
+advisory flags, reason codes, or free text, exactly like every pre-existing
+entry. Adding these four entries did not change the relative priority
+ordering of any pre-existing fact_type.
+
+`AWARD` remains completely unsupported: no `FACT_TYPE_SECTION_MAP` entry, no
+`CvSection.AWARDS` member, and no mapping of `AWARD`/`AWARD_NAME` onto
+`ACHIEVEMENTS` or any other existing section. This is a deliberate exclusion,
+not an oversight — see "Unsupported sections" below.
+
+## Owner EntityType policy
+
+Stage P4.5a adds one closed, versioned mapping,
+`app/services/cv_content_plan_policy.py::OWNER_ENTITY_TYPE_BY_FACT_TYPE`,
+from each of the four fact_types above to the `EntityType` their owner
+(`decision.entity_id`) must resolve to in the caller-supplied `entity_types`
+snapshot:
+
+| fact_type              | required `EntityType`       |
+|-------------------------|--------------------------------|
+| `EDUCATION_DEGREE`      | `EntityType.EDUCATION`         |
+| `CERTIFICATION_NAME`    | `EntityType.CERTIFICATION`     |
+| `COURSE_NAME`           | `EntityType.COURSE`            |
+| `LANGUAGE_NAME`         | `EntityType.LANGUAGE`          |
+
+This mapping lives in the P4 policy layer and is the single shared source of
+truth for both the builder and the validator — neither module re-declares it
+as a local dict, and `EntityType` is never inferred from `fact_type` by any
+other means (no prefix/substring match, no lookup table outside this one).
 
 ## Result partition
 
@@ -125,6 +199,40 @@ matching reason code; `SELECTED` can end up planned, a conflict member, or
 omitted for a P4-only structural reason
 (`SECTION_NOT_ALLOWED_FOR_FACT_TYPE`, `EMPLOYMENT_SCOPE_REQUIRED`, or
 `BUDGET_NOT_AVAILABLE`). P4 never changes a decision's `outcome`.
+
+### Owner check runs before partition, over every outcome
+
+Since Stage P4.5a, before any of the partitioning above happens, the builder
+checks — for **every** deduplicated input decision whose `fact_type` is one
+of the four closed P4.5a fact_types — that `entity_types` resolves
+`decision.entity_id` to exactly the `EntityType` `OWNER_ENTITY_TYPE_BY_FACT_TYPE`
+requires. This check is not limited to `SELECTED` decisions, to decisions
+that would end up in `plan.sections`, or to any single bucket: it runs over
+`APPROVAL_REQUIRED`, `BLOCKED`, `EXCLUDED`, and `NOT_RELEVANT` decisions, and
+over decisions that would otherwise become conflict members, exactly the
+same as for `SELECTED` ones. The rationale is that owner identity is an
+integrity property of the input snapshot itself, not a placement rule that
+only matters once a fact is being routed somewhere.
+
+A missing `entity_types` entry for such a decision is already caught by the
+existing, broader `entity_types` snapshot violation (every decision's
+`entity_id` was already required before Stage P4.5a). A *present but wrong*
+`EntityType` is a new, distinct violation
+(`"owner_entity_type_mismatch"` in `snapshot_violations`). Either failure
+mode:
+
+- returns `CvContentPlanBuildOutcome.INVALID_INPUT_SNAPSHOT` with `plan=None`,
+- never creates an `OmittedFactDecision`, `PendingFactApproval`, or
+  `CvContentPlanConflict` for the mismatched decision,
+- never falls back to the first decision, never attempts to "fix" the
+  owner, and never performs a database lookup — P4 has none to fall back on,
+- happens strictly before Step 1 (conflict detection) of the builder, so a
+  decision that would otherwise participate in a conflict never reaches that
+  logic once its owner type is wrong.
+
+`snapshot_violations` remains a deterministic, sorted tuple of plain string
+reason keys, exactly like every pre-existing entry (`"entity_types"`,
+`"target_context_fingerprint"`, etc.).
 
 ## Employment grouping
 
@@ -205,6 +313,13 @@ is exceeded by actual item count **never trims**: every item stays,
 at least `REQUIRES_REVIEW` (a conflict still takes priority and forces
 `INVALID`).
 
+`CvSection.COURSES` (Stage P4.5a) needed no dedicated budget logic: because
+budget evaluation in the builder already iterates generically over every
+non-`EXPERIENCE` `CvSection` member, adding `COURSES` to the enum was
+sufficient for it to gain `NOT_EVALUATED`/`WITHIN_BUDGET`/`EXCEEDS_BUDGET`
+semantics identical to every other flat section, with no section-specific
+branch added anywhere in the builder.
+
 ## Fingerprints
 
 Every fingerprint is `hashlib.sha256` over
@@ -221,6 +336,16 @@ the schema/policy/selection/transformation versions, the target context and
 budget profile fingerprints, and every sorted collection of section /
 pending / omission / conflict fingerprints plus the sorted set of source
 decision fingerprints.
+
+Since `CvSection.COURSES` is a normal `CvSection` member and
+`CV_CONTENT_PLAN_SCHEMA_VERSION`/`CV_CONTENT_POLICY_VERSION` both participate
+in `content_plan_fingerprint`, adding a `COURSE_NAME` fact to a plan changes
+the `COURSES` section's `section_plan_fingerprint` (its `member_fingerprints`
+list changes) and therefore always changes `content_plan_fingerprint` too —
+no separate fingerprint code path was added for `COURSES`. The schema/policy
+version bumps alone (independent of any actual `COURSES` content) also
+change `content_plan_fingerprint` for every plan, since both versions are
+folded into it directly.
 
 ## Replay and freshness
 
@@ -283,6 +408,24 @@ creation — `TruthEntityUpdate` carries no `entity_type` field, and
 no code path that can change an entity's type in place, so unlike
 employment order there is nothing for a replay snapshot to detect changing.
 
+### Stage P4.5a made no change to the replay schema
+
+`CvContentPlanReplayInput` gained no new field for `COURSES` support: its
+existing `fact_revisions`/`fact_content_fingerprints`/`fact_types`/
+`permission_snapshot_fingerprints` dicts are already keyed by `fact_id`, not
+by section, so a `COURSE_NAME` fact populates them exactly like any other
+flat-section fact. `replay_input_from_plan()` and `stale_fields()` needed no
+code change either — they already walk `plan.sections` generically.
+`content_policy_version` (already an existing replay field, tracking
+`CV_CONTENT_POLICY_VERSION`) is what makes the Stage P4.5a `v1` → `v2` bump
+visible to staleness detection: a plan built under the old content policy
+compares as `STALE` against a freshly computed `replay_input_from_plan` once
+the running code is on `cv-content-policy-v2`, exactly the same mechanism
+that already covered every previous content-policy version bump.
+`employment_entry_orders` (see above) is unaffected by any of Stage P4.5a's
+changes and continues to work exactly as before, including in plans that
+also contain non-employment fact_types.
+
 ## Structural validation
 
 `app/services/cv_content_plan_validator.py::validate_cv_content_plan()` is
@@ -292,6 +435,54 @@ mismatch as a `CvContentPlanViolation`. `structural_status` is `INVALID` if
 any violation is found, except `SECTION_BUDGET_EXCEEDED`, which is
 informational only (the budget-exceeded condition is already reflected in
 `plan.plan_status`).
+
+### `entity_types` is now a required, keyword-only parameter
+
+Since Stage P4.5a, `validate_cv_content_plan()`'s signature is:
+
+```python
+def validate_cv_content_plan(
+    plan: CvContentPlan,
+    decisions_by_fingerprint: Mapping[str, FactSelectionDecision],
+    *,
+    entity_types: Mapping[UUID, EntityType],
+    current_replay_input: CvContentPlanReplayInput | None = None,
+) -> CvContentPlanValidationResult: ...
+```
+
+`entity_types` has no default and is keyword-only; calling without it is a
+`TypeError`, not a silently-skipped check. Every call site in the repository
+(tests only — P4 has no production caller yet) was updated to pass it.
+
+The validator independently re-derives the same owner-`EntityType` check the
+builder performs at build time, over **every** decision fingerprint in
+`plan.source_decision_fingerprints` whose `fact_type` is one of the four
+closed P4.5a fact_types — not only the ones reachable through
+`PlannedFactUse`, and not only the ones that ended up in `plan.sections`.
+Because `source_decision_fingerprints` is, by the existing partition
+invariant, exactly the union of the planned/pending/omitted/conflict
+buckets, this single loop already covers a decision regardless of which
+bucket it landed in: a planned `PlannedFactUse`, a `PendingFactApproval`, an
+`OmittedFactDecision`, or a member of a `CvContentPlanConflict`. A decision
+fingerprint present in `plan.source_decision_fingerprints` but absent from
+`decisions_by_fingerprint` is still reported as its own, pre-existing
+violation (`DECISION_NOT_FOUND` / `CONFLICT_MEMBER_NOT_FOUND`) — the owner
+check simply skips it rather than double-reporting.
+
+Two new, always-fatal `CvContentPlanViolationCode` members were added:
+
+| Violation code                  | Meaning                                                                 |
+|-----------------------------------|----------------------------------------------------------------------------|
+| `OWNER_ENTITY_TYPE_MISSING`      | The decision's `entity_id` has no entry at all in the supplied `entity_types`. |
+| `OWNER_ENTITY_TYPE_MISMATCH`     | `entity_types` resolves the `entity_id` to an `EntityType` other than the one `OWNER_ENTITY_TYPE_BY_FACT_TYPE` requires for this `fact_type`. |
+
+Both always flip `structural_status` to `INVALID` and `p5_ready` to `False`
+— unlike `SECTION_BUDGET_EXCEEDED`, neither is treated as informational, and
+neither reuses `OmissionReasonCode` semantics (an owner-type problem is a
+structural defect in the input snapshot, not a legitimate reason a fact was
+omitted from the plan). A fact_type outside the closed P4.5a set (e.g.
+`SKILL`) is completely unaffected: it never triggers either new violation
+code, regardless of what `entity_types` contains for it.
 
 `freshness_status` is `FRESHNESS_NOT_VERIFIED` when no
 `current_replay_input` is supplied, `FRESH`/`STALE` otherwise, by comparing
@@ -304,14 +495,23 @@ is only a signal for a future caller.
 
 ## Unsupported sections (by design, for now)
 
-`EDUCATION`, `CERTIFICATIONS`, and `LANGUAGES` — and the corresponding
-`EDUCATION`/`CERTIFICATION`/`COURSE`/`LANGUAGE`/`AWARD` fact_types — have no
-P4 policy yet. They stay `skipped_empty=True` with no lookup and no
-`FACT_TYPE_POLICY_NOT_FOUND`-style workaround. A complete CV requires a
-separate P1/P3 extension stage (new `TransformationPolicy` entries plus new
-P3 gate coverage) before P5 can rely on those sections being populated. This
-does not block P4 itself, which is deliberately scoped to the fact_types P1
-already recognizes.
+As of Stage P4.5a, `EDUCATION`, `CERTIFICATIONS`, `COURSES`, and `LANGUAGES`
+are all populated sections with a real P4 policy (see **Section mapping**
+and **Owner EntityType policy** above) — they are no longer permanently
+`skipped_empty=True`; they simply stay `skipped_empty=True` when the caller
+supplies no decision for that fact_type, exactly like every other flat
+section.
+
+`AWARD` remains the one deliberately out-of-scope non-employment fact_type:
+no `TransformationPolicy` entry (P1), no `FACT_TYPE_SECTION_MAP` entry (P4),
+no `CvSection.AWARDS` member, and no `OWNER_ENTITY_TYPE_BY_FACT_TYPE` entry.
+An `AWARD`/`AWARD_NAME` fact_type still fails closed at the P3 fact-type
+policy gate (`FACT_TYPE_POLICY_NOT_FOUND` → `BLOCKED`) long before it could
+ever reach P4, and even if it somehow did, `resolve_section_mapping` would
+still return `None` (`SECTION_NOT_ALLOWED_FOR_FACT_TYPE`). A complete CV
+covering awards requires a later stage (new P1 `TransformationPolicy` entry,
+new P4 section mapping and owner policy, and a `CvSection.AWARDS` schema
+addition) — out of scope here.
 
 ## No new table, no router, no feature flag, no legacy coupling
 
@@ -328,3 +528,11 @@ text, never invokes an LLM rephrase, never builds a DOCX/PDF, and never
 writes to the Master Resume. A future Stage P5 is expected to consume a
 `p5_ready == True` plan and perform content generation from it — that stage
 is explicitly out of scope here and is not started by this change.
+
+Stage P4.5a extends the deterministic Truth Entity/Fact → `FactSelectionDecision`
+→ `CvContentPlan` pipeline to four additional, real fact_types
+(`EDUCATION_DEGREE`/`CERTIFICATION_NAME`/`COURSE_NAME`/`LANGUAGE_NAME`) and
+adds no router, no SQL, no frontend wiring, no DOCX/PDF generation, and no
+Master Resume mutation — the same boundary as every prior P4 stage. `AWARD`
+remains unsupported (see **Unsupported sections** above), and Stage P5 is
+still not started by this change.

@@ -10,14 +10,16 @@ from __future__ import annotations
 
 from app.schemas.cv_content_plan import ApprovalType, CvSection
 from app.schemas.fact_selection import FactSelectionReasonCode
+from app.schemas.truth_entity import EntityType
 
 
-CV_CONTENT_POLICY_VERSION = "cv-content-policy-v1"
+CV_CONTENT_POLICY_VERSION = "cv-content-policy-v2"
 
 #: Plan-wide section ordering. ``CvContentPlan.sections`` always contains
 #: exactly one entry per member, in this order. Versioned by
 #: ``CV_CONTENT_POLICY_VERSION``: reordering, adding or removing a member
-#: requires a version bump.
+#: requires a version bump. ``COURSES`` was added in Stage P4.5a, between
+#: ``CERTIFICATIONS`` and ``LANGUAGES``.
 SECTION_ORDER: tuple[CvSection, ...] = (
     CvSection.PROFILE,
     CvSection.COMPETENCIES,
@@ -25,6 +27,7 @@ SECTION_ORDER: tuple[CvSection, ...] = (
     CvSection.ACHIEVEMENTS,
     CvSection.EDUCATION,
     CvSection.CERTIFICATIONS,
+    CvSection.COURSES,
     CvSection.LANGUAGES,
     CvSection.TOOLS_TECHNOLOGIES,
 )
@@ -57,6 +60,11 @@ FACT_TYPE_SECTION_MAP: dict[tuple[str, str], _FactTypeSectionMapping] = {
     ("SKILL", "SKILLS"): (CvSection.COMPETENCIES, "flat"),
     ("TOOL", "SKILLS"): (CvSection.TOOLS_TECHNOLOGIES, "flat"),
     ("TECHNOLOGY", "SKILLS"): (CvSection.TOOLS_TECHNOLOGIES, "flat"),
+    # -- Stage P4.5a: non-employment CV sections. --
+    ("EDUCATION_DEGREE", "EDUCATION"): (CvSection.EDUCATION, "flat"),
+    ("CERTIFICATION_NAME", "CERTIFICATIONS"): (CvSection.CERTIFICATIONS, "flat"),
+    ("COURSE_NAME", "COURSES"): (CvSection.COURSES, "flat"),
+    ("LANGUAGE_NAME", "LANGUAGES"): (CvSection.LANGUAGES, "flat"),
 }
 
 #: fact_type values whose header bucket placement is keyed by
@@ -83,6 +91,24 @@ FACT_TYPE_PRIORITY: dict[str, int] = {
     "SKILL": 110,
     "TOOL": 120,
     "TECHNOLOGY": 130,
+    # -- Stage P4.5a: non-employment CV sections. --
+    "EDUCATION_DEGREE": 140,
+    "CERTIFICATION_NAME": 150,
+    "COURSE_NAME": 160,
+    "LANGUAGE_NAME": 170,
+}
+
+#: Stage P4.5a: closed, versioned mapping from the four non-employment
+#: fact_types to the ``EntityType`` their owner (``decision.entity_id``) must
+#: resolve to in the caller-supplied ``entity_types`` snapshot. This is the
+#: single shared source of truth for the P4 builder and validator -- never
+#: inferred from ``fact_type`` outside this dict, and never re-declared as a
+#: local literal in either module.
+OWNER_ENTITY_TYPE_BY_FACT_TYPE: dict[str, EntityType] = {
+    "EDUCATION_DEGREE": EntityType.EDUCATION,
+    "CERTIFICATION_NAME": EntityType.CERTIFICATION,
+    "COURSE_NAME": EntityType.COURSE,
+    "LANGUAGE_NAME": EntityType.LANGUAGE,
 }
 
 

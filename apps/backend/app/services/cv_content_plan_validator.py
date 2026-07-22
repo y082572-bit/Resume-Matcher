@@ -9,6 +9,7 @@ mismatch as a ``CvContentPlanViolation``. Nothing here mutates the plan.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from uuid import UUID
 
 from app.schemas.cv_content_plan import (
     CvContentPlan,
@@ -24,6 +25,7 @@ from app.schemas.cv_content_plan import (
     SectionBudgetStatus,
 )
 from app.schemas.fact_selection import FactSelectionDecision, SelectionDecisionOutcome
+from app.schemas.truth_entity import EntityType
 from app.services.cv_content_plan_builder import (
     compute_conflict_fingerprint,
     compute_content_plan_fingerprint,
@@ -33,7 +35,12 @@ from app.services.cv_content_plan_builder import (
     compute_planned_fact_use_fingerprint,
     compute_section_plan_fingerprint,
 )
-from app.services.cv_content_plan_policy import SECTION_ORDER, resolve_approval_type, resolve_section_mapping
+from app.services.cv_content_plan_policy import (
+    OWNER_ENTITY_TYPE_BY_FACT_TYPE,
+    SECTION_ORDER,
+    resolve_approval_type,
+    resolve_section_mapping,
+)
 from app.services.cv_content_plan_replay import replay_input_from_plan, stale_fields
 
 
@@ -73,6 +80,7 @@ def validate_cv_content_plan(
     plan: CvContentPlan,
     decisions_by_fingerprint: Mapping[str, FactSelectionDecision],
     *,
+    entity_types: Mapping[UUID, EntityType],
     current_replay_input: CvContentPlanReplayInput | None = None,
 ) -> CvContentPlanValidationResult:
     violations: list[CvContentPlanViolation] = []
@@ -133,6 +141,37 @@ def validate_cv_content_plan(
                     CvContentPlanViolationCode.SOURCE_PARTITION_OVERLAP,
                     f"{names[i]} and {names[j]} share decision fingerprints: {sorted(overlap)}",
                 )
+
+    # Stage P4.5a: independently re-check owner EntityType for every decision
+    # belonging to source_decision_fingerprints whose fact_type owns a closed
+    # non-employment entity type -- across every bucket (planned, pending,
+    # omitted, conflict member), never limited to PlannedFactUse or to
+    # plan.sections. A decision fingerprint absent from decisions_by_fingerprint
+    # is already reported elsewhere (DECISION_NOT_FOUND / CONFLICT_MEMBER_NOT_FOUND)
+    # and is skipped here to avoid duplicate reporting.
+    for fingerprint in plan.source_decision_fingerprints:
+        decision = decisions_by_fingerprint.get(fingerprint)
+        if decision is None:
+            continue
+        expected_owner_type = OWNER_ENTITY_TYPE_BY_FACT_TYPE.get(decision.fact_type)
+        if expected_owner_type is None:
+            continue
+        actual_owner_type = entity_types.get(decision.entity_id)
+        if actual_owner_type is None:
+            _violate(
+                CvContentPlanViolationCode.OWNER_ENTITY_TYPE_MISSING,
+                "decision's entity_id has no entry in the supplied entity_types mapping",
+                decision_fingerprint=fingerprint,
+                fact_id=decision.fact_id,
+            )
+        elif actual_owner_type != expected_owner_type:
+            _violate(
+                CvContentPlanViolationCode.OWNER_ENTITY_TYPE_MISMATCH,
+                f"decision's entity_id resolves to {actual_owner_type.value}, expected "
+                f"{expected_owner_type.value} for fact_type {decision.fact_type}",
+                decision_fingerprint=fingerprint,
+                fact_id=decision.fact_id,
+            )
 
     planned_fact_ids = [use.fact_id for use in all_planned_uses]
     if len(planned_fact_ids) != len(set(planned_fact_ids)):

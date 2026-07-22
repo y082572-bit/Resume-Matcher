@@ -204,7 +204,7 @@ def test_only_achievement_and_employment_numeric_result_gain_flatten_for_lower_r
 
 
 def test_policy_registry_version_was_bumped_for_employment_fact_types() -> None:
-    assert TruthTransformationPolicyRegistry.version == "truth-transformation-policy-v3"
+    assert TruthTransformationPolicyRegistry.version == "truth-transformation-policy-v4"
 
 
 # --- Stage P3.5: EMPLOYMENT_* fact_type matrix -----------------------------
@@ -329,3 +329,91 @@ def test_hard_safety_policy_unchanged_for_flatten_for_lower_role() -> None:
         )
     )
     assert (exact_only.allowed, exact_only.reason_code) == (True, "HARD_SAFETY_ALLOWED")
+
+
+# --- Stage P4.5a: non-employment CV section fact_type matrix ---------------
+#
+# Exactly four fact_types: EDUCATION_DEGREE, CERTIFICATION_NAME, COURSE_NAME,
+# LANGUAGE_NAME. Each is copy-only (EXACT_COPY/FORMAT_NORMALIZATION) with
+# exactly one target_scope. AWARD is deliberately out of scope for P4.5a.
+
+_P45A_FACT_TYPE_SCOPE = {
+    "EDUCATION_DEGREE": "EDUCATION",
+    "CERTIFICATION_NAME": "CERTIFICATIONS",
+    "COURSE_NAME": "COURSES",
+    "LANGUAGE_NAME": "LANGUAGES",
+}
+
+
+@pytest.mark.parametrize("fact_type,target_scope", list(_P45A_FACT_TYPE_SCOPE.items()))
+def test_p45a_fact_type_policy_exists(fact_type: str, target_scope: str) -> None:
+    registry = TruthTransformationPolicyRegistry()
+    policy = registry.get(fact_type)
+    assert policy is not None
+    assert policy.allowed_target_scopes == frozenset({target_scope})
+
+
+@pytest.mark.parametrize("fact_type", list(_P45A_FACT_TYPE_SCOPE))
+def test_p45a_fact_type_only_allows_copy_operations(fact_type: str) -> None:
+    registry = TruthTransformationPolicyRegistry()
+    policy = registry.get(fact_type)
+    assert policy is not None
+    assert policy.allowed_operations == frozenset(
+        {TransformationOperation.EXACT_COPY, TransformationOperation.FORMAT_NORMALIZATION}
+    )
+
+
+@pytest.mark.parametrize("fact_type", list(_P45A_FACT_TYPE_SCOPE))
+def test_p45a_fact_type_has_exactly_one_target_scope(fact_type: str) -> None:
+    registry = TruthTransformationPolicyRegistry()
+    policy = registry.get(fact_type)
+    assert policy is not None
+    assert len(policy.allowed_target_scopes) == 1
+
+
+def test_p45a_policy_registry_version_is_v4() -> None:
+    assert TruthTransformationPolicyRegistry.version == "truth-transformation-policy-v4"
+
+
+@pytest.mark.parametrize("fact_type,target_scope", list(_P45A_FACT_TYPE_SCOPE.items()))
+def test_p45a_wrong_target_scope_is_denied(fact_type: str, target_scope: str) -> None:
+    registry = TruthTransformationPolicyRegistry()
+    decision = registry.evaluate(
+        _context(fact_type=fact_type, operation=TransformationOperation.EXACT_COPY, target_scope="SKILLS"),
+        permission_operations=frozenset({TransformationOperation.EXACT_COPY}),
+        permission_target_scope="SKILLS",
+        permission_active=True,
+    )
+    assert (decision.allowed, decision.reason_code) == (False, "TRANSFORMATION_POLICY_DENIED")
+
+
+@pytest.mark.parametrize("fact_type,target_scope", list(_P45A_FACT_TYPE_SCOPE.items()))
+def test_p45a_controlled_rephrase_is_denied(fact_type: str, target_scope: str) -> None:
+    registry = TruthTransformationPolicyRegistry()
+    decision = registry.evaluate(
+        _context(
+            fact_type=fact_type,
+            operation=TransformationOperation.CONTROLLED_REPHRASE,
+            target_scope=target_scope,
+        ),
+        permission_operations=frozenset({TransformationOperation.CONTROLLED_REPHRASE}),
+        permission_target_scope=target_scope,
+        permission_active=True,
+    )
+    assert (decision.allowed, decision.reason_code) == (False, "TRANSFORMATION_POLICY_DENIED")
+
+
+@pytest.mark.parametrize("fact_type,target_scope", list(_P45A_FACT_TYPE_SCOPE.items()))
+def test_p45a_flatten_for_lower_role_is_denied(fact_type: str, target_scope: str) -> None:
+    registry = TruthTransformationPolicyRegistry()
+    decision = registry.evaluate(
+        _context(
+            fact_type=fact_type,
+            operation=TransformationOperation.FLATTEN_FOR_LOWER_ROLE,
+            target_scope=target_scope,
+        ),
+        permission_operations=frozenset({TransformationOperation.FLATTEN_FOR_LOWER_ROLE}),
+        permission_target_scope=target_scope,
+        permission_active=True,
+    )
+    assert (decision.allowed, decision.reason_code) == (False, "TRANSFORMATION_POLICY_DENIED")

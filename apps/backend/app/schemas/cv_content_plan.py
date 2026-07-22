@@ -26,7 +26,7 @@ from app.schemas.truth_entity import SHA256_PATTERN
 from app.schemas.truth_fact import FACT_TYPE_PATTERN, Transferability, TransformationOperation
 
 
-CV_CONTENT_PLAN_SCHEMA_VERSION = "cv-content-plan-schema-v1"
+CV_CONTENT_PLAN_SCHEMA_VERSION = "cv-content-plan-schema-v2"
 
 
 class CvSection(StrEnum):
@@ -42,6 +42,7 @@ class CvSection(StrEnum):
     ACHIEVEMENTS = "ACHIEVEMENTS"
     EDUCATION = "EDUCATION"
     CERTIFICATIONS = "CERTIFICATIONS"
+    COURSES = "COURSES"
     LANGUAGES = "LANGUAGES"
     TOOLS_TECHNOLOGIES = "TOOLS_TECHNOLOGIES"
 
@@ -142,6 +143,15 @@ class CvContentPlanViolationCode(StrEnum):
     CONFLICT_MEMBER_NOT_FOUND = "CONFLICT_MEMBER_NOT_FOUND"
     FINGERPRINT_MISMATCH = "FINGERPRINT_MISMATCH"
     PLAN_STATUS_INCONSISTENT = "PLAN_STATUS_INCONSISTENT"
+    #: Stage P4.5a: a decision whose fact_type owns a closed non-employment
+    #: entity type (EDUCATION_DEGREE/CERTIFICATION_NAME/COURSE_NAME/
+    #: LANGUAGE_NAME) has no entry at all for its ``entity_id`` in the
+    #: caller-supplied ``entity_types`` mapping. Always fatal.
+    OWNER_ENTITY_TYPE_MISSING = "OWNER_ENTITY_TYPE_MISSING"
+    #: Stage P4.5a: same as above, but ``entity_types`` resolves the decision's
+    #: ``entity_id`` to an ``EntityType`` other than the one closed policy
+    #: requires for this fact_type. Always fatal.
+    OWNER_ENTITY_TYPE_MISMATCH = "OWNER_ENTITY_TYPE_MISMATCH"
 
 
 class PlannedFactUse(BaseModel):
@@ -328,7 +338,7 @@ class CvContentPlan(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["cv-content-plan-schema-v1"] = CV_CONTENT_PLAN_SCHEMA_VERSION
+    schema_version: Literal["cv-content-plan-schema-v2"] = CV_CONTENT_PLAN_SCHEMA_VERSION
     content_plan_fingerprint: str = Field(pattern=SHA256_PATTERN)
     content_policy_version: str = Field(min_length=1, max_length=64)
     selection_policy_version: str = Field(min_length=1, max_length=64)

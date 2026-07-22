@@ -320,3 +320,51 @@ a `SELECTED` fact is phrased, does not generate CV text, DOCX, or PDF
 output, and does not touch the CV transformation plan/generation/approval
 services. Turning a set of `FactSelectionDecision`s into actual generated
 content is out of scope for P3 and belongs to a later stage.
+
+## Stage P4.5a — non-employment CV section fact_types
+
+Stage P4.5a adds exactly four real, non-employment fact_types to the P1
+`TruthTransformationPolicyRegistry` (`app/services/truth_policy.py`,
+`POLICY_REGISTRY_VERSION` bumped from `truth-transformation-policy-v3` to
+`truth-transformation-policy-v4`):
+
+| fact_type              | `allowed_target_scopes` | `allowed_operations`                 |
+|------------------------|--------------------------|----------------------------------------|
+| `EDUCATION_DEGREE`     | `EDUCATION`             | `EXACT_COPY`, `FORMAT_NORMALIZATION`   |
+| `CERTIFICATION_NAME`   | `CERTIFICATIONS`        | `EXACT_COPY`, `FORMAT_NORMALIZATION`   |
+| `COURSE_NAME`          | `COURSES`               | `EXACT_COPY`, `FORMAT_NORMALIZATION`   |
+| `LANGUAGE_NAME`        | `LANGUAGES`             | `EXACT_COPY`, `FORMAT_NORMALIZATION`   |
+
+All four are copy-only: unlike the Stage P3.5 `EMPLOYMENT_*` fact_types,
+none of these four ever gains `CONTROLLED_REPHRASE`, `FLATTEN_FOR_LOWER_ROLE`,
+`ELEVATE_PRESENTATION_FOR_SENIOR_ROLE`, `COMBINE_APPROVED_FACTS`,
+`SPLIT_APPROVED_FACT`, or `SUMMARIZE_APPROVED_FACTS` -- a degree, a
+certification name, a course name, or a language name is presented exactly
+as recorded, never rephrased or restructured by the CV pipeline. No new
+`TruthPermission` requirement was added for these operations: exactly like
+every other `fact_type`, `EXACT_COPY`/`FORMAT_NORMALIZATION` remain
+base-operation-shortcut eligible (gate 4 grants them without an explicit
+permission once gate 3 has already cleared the fact_type/target_scope/
+operation combination).
+
+`SELECTION_POLICY_VERSION` (P3's own decision-logic version) is
+**unchanged** at `"fact-selection-policy-v3"` -- Stage P4.5a is a P1 registry
+content change only (new `TransformationPolicy` entries plus a
+`POLICY_REGISTRY_VERSION` bump), consumed automatically through the existing
+`transformation_policy_version` field on every decision (see "Decision
+fingerprint" above). No change was made to `fact_selection_policy.py`
+itself, so there is no reason to bump P3's own version.
+
+P2's legacy migrator (`truth_legacy_migrator.py`) already produced these
+four fact_types before Stage P4.5a existed (see the `_NAMED_CATEGORY_*`
+tables for `wyksztalcenie`/`certyfikaty`/`kursy`/`jezyki`); Stage P4.5a adds
+no new migrator code, no new backfill, and no new legacy category. It only
+teaches the two downstream layers that previously had no policy or section
+for these fact_types (P1's registry here, and P4's content policy) how to
+handle them.
+
+`AWARD` remains completely out of scope for Stage P4.5a: no
+`TransformationPolicy` entry, no P4 section mapping, no owner `EntityType`
+policy entry. An `AWARD`/`AWARD_NAME` fact_type still fails closed to
+`BLOCKED` (`FACT_TYPE_POLICY_NOT_FOUND`) at gate 3, exactly as any other
+unregistered fact_type would.

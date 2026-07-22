@@ -12,11 +12,13 @@ import pytest
 
 from app.schemas.cv_content_plan import ApprovalType, CvContentBudgetProfile, CvSection
 from app.schemas.fact_selection import FactSelectionReasonCode
+from app.schemas.truth_entity import EntityType
 from app.services import cv_content_plan_policy
 from app.services.cv_content_plan_policy import (
     CV_CONTENT_POLICY_VERSION,
     FACT_TYPE_PRIORITY,
     FACT_TYPE_SECTION_MAP,
+    OWNER_ENTITY_TYPE_BY_FACT_TYPE,
     SECTION_ORDER,
     requires_employment_entity_grouping,
     requires_employment_scope_grouping,
@@ -40,6 +42,11 @@ SUPPORTED_COMBINATIONS = (
     ("SKILL", "SKILLS", CvSection.COMPETENCIES, "flat"),
     ("TOOL", "SKILLS", CvSection.TOOLS_TECHNOLOGIES, "flat"),
     ("TECHNOLOGY", "SKILLS", CvSection.TOOLS_TECHNOLOGIES, "flat"),
+    # -- Stage P4.5a: non-employment CV sections. --
+    ("EDUCATION_DEGREE", "EDUCATION", CvSection.EDUCATION, "flat"),
+    ("CERTIFICATION_NAME", "CERTIFICATIONS", CvSection.CERTIFICATIONS, "flat"),
+    ("COURSE_NAME", "COURSES", CvSection.COURSES, "flat"),
+    ("LANGUAGE_NAME", "LANGUAGES", CvSection.LANGUAGES, "flat"),
 )
 
 UNSUPPORTED_COMBINATIONS = (
@@ -50,16 +57,22 @@ UNSUPPORTED_COMBINATIONS = (
     ("EMPLOYMENT_ROLE", "EXPERIENCE"),
     ("COMPANY", "EXPERIENCE"),
     ("ACHIEVEMENT", "SKILLS"),
-    ("EDUCATION", "EDUCATION"),
-    ("CERTIFICATION", "CERTIFICATIONS"),
-    ("COURSE", "EDUCATION"),
-    ("LANGUAGE", "LANGUAGES"),
-    ("AWARD", "ACHIEVEMENTS"),
+    ("EDUCATION_DEGREE", "CERTIFICATIONS"),
+    ("EDUCATION_DEGREE", "ACHIEVEMENTS"),
+    ("CERTIFICATION_NAME", "EDUCATION"),
+    ("CERTIFICATION_NAME", "ACHIEVEMENTS"),
+    # COURSE_NAME must never be routed anywhere but COURSES.
+    ("COURSE_NAME", "EDUCATION"),
+    ("COURSE_NAME", "CERTIFICATIONS"),
+    ("COURSE_NAME", "ACHIEVEMENTS"),
+    ("LANGUAGE_NAME", "EDUCATION"),
+    ("LANGUAGE_NAME", "ACHIEVEMENTS"),
+    ("AWARD_NAME", "ACHIEVEMENTS"),
     ("UNKNOWN_FACT_TYPE", "EXPERIENCE"),
 )
 
 
-def test_exactly_fourteen_supported_combinations_exist() -> None:
+def test_exactly_eighteen_supported_combinations_exist() -> None:
     assert len(FACT_TYPE_SECTION_MAP) == len(SUPPORTED_COMBINATIONS)
 
 
@@ -138,6 +151,7 @@ def test_section_order_is_stable_and_covers_every_cv_section() -> None:
         CvSection.ACHIEVEMENTS,
         CvSection.EDUCATION,
         CvSection.CERTIFICATIONS,
+        CvSection.COURSES,
         CvSection.LANGUAGES,
         CvSection.TOOLS_TECHNOLOGIES,
     )
@@ -145,8 +159,30 @@ def test_section_order_is_stable_and_covers_every_cv_section() -> None:
     assert len(SECTION_ORDER) == len(set(SECTION_ORDER))
 
 
+def test_courses_exists_after_certifications_and_before_languages() -> None:
+    assert CvSection.COURSES.value == "COURSES"
+    certifications_index = SECTION_ORDER.index(CvSection.CERTIFICATIONS)
+    courses_index = SECTION_ORDER.index(CvSection.COURSES)
+    languages_index = SECTION_ORDER.index(CvSection.LANGUAGES)
+    assert certifications_index < courses_index < languages_index
+
+
+def test_all_other_sections_keep_their_relative_order() -> None:
+    other_sections = [section for section in SECTION_ORDER if section != CvSection.COURSES]
+    assert other_sections == [
+        CvSection.PROFILE,
+        CvSection.COMPETENCIES,
+        CvSection.EXPERIENCE,
+        CvSection.ACHIEVEMENTS,
+        CvSection.EDUCATION,
+        CvSection.CERTIFICATIONS,
+        CvSection.LANGUAGES,
+        CvSection.TOOLS_TECHNOLOGIES,
+    ]
+
+
 def test_content_policy_version_is_its_own_constant() -> None:
-    assert CV_CONTENT_POLICY_VERSION == "cv-content-policy-v1"
+    assert CV_CONTENT_POLICY_VERSION == "cv-content-policy-v2"
 
 
 def test_budget_profile_has_no_default_limits() -> None:
@@ -168,6 +204,62 @@ def test_requires_employment_scope_grouping_only_for_responsibility_and_achievem
     assert requires_employment_scope_grouping("EMPLOYMENT_NUMERIC_RESULT", "EXPERIENCE") is True
     assert requires_employment_scope_grouping("ACHIEVEMENT", "EXPERIENCE") is True
     assert requires_employment_scope_grouping("ACHIEVEMENT", "PROJECT") is False
+
+
+# --- Stage P4.5a: owner EntityType policy and priority coverage -------------
+
+
+def test_owner_entity_type_mapping_is_exact_for_all_four_p45a_fact_types() -> None:
+    assert OWNER_ENTITY_TYPE_BY_FACT_TYPE == {
+        "EDUCATION_DEGREE": EntityType.EDUCATION,
+        "CERTIFICATION_NAME": EntityType.CERTIFICATION,
+        "COURSE_NAME": EntityType.COURSE,
+        "LANGUAGE_NAME": EntityType.LANGUAGE,
+    }
+
+
+def test_fact_type_priority_includes_all_four_p45a_mappings() -> None:
+    for fact_type in (
+        "EDUCATION_DEGREE",
+        "CERTIFICATION_NAME",
+        "COURSE_NAME",
+        "LANGUAGE_NAME",
+    ):
+        assert fact_type in FACT_TYPE_PRIORITY
+    values = [
+        FACT_TYPE_PRIORITY[ft]
+        for ft in ("EDUCATION_DEGREE", "CERTIFICATION_NAME", "COURSE_NAME", "LANGUAGE_NAME")
+    ]
+    assert len(set(values)) == len(values)
+
+
+def test_p45a_priorities_do_not_disturb_existing_fact_type_ordering() -> None:
+    pre_existing_order = [
+        FACT_TYPE_PRIORITY[ft]
+        for ft in (
+            "EMPLOYMENT_ROLE",
+            "COMPANY",
+            "ROLE",
+            "EMPLOYMENT_PERIOD",
+            "EMPLOYMENT_ACTIVITY",
+            "EMPLOYMENT_RESPONSIBILITY_SCALE",
+            "RESPONSIBILITY",
+            "EMPLOYMENT_NUMERIC_RESULT",
+            "ACHIEVEMENT",
+            "SUMMARY",
+            "SKILL",
+            "TOOL",
+            "TECHNOLOGY",
+        )
+    ]
+    assert pre_existing_order == sorted(pre_existing_order)
+
+
+def test_course_name_only_maps_to_courses_section() -> None:
+    assert resolve_section_mapping("COURSE_NAME", "COURSES") == (CvSection.COURSES, "flat")
+    assert resolve_section_mapping("COURSE_NAME", "EDUCATION") is None
+    assert resolve_section_mapping("COURSE_NAME", "CERTIFICATIONS") is None
+    assert resolve_section_mapping("COURSE_NAME", "ACHIEVEMENTS") is None
     assert requires_employment_scope_grouping("COMPANY", "EMPLOYMENT_HEADER") is False
     assert requires_employment_scope_grouping("SKILL", "SKILLS") is False
 

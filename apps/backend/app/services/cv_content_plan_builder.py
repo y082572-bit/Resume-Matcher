@@ -47,6 +47,7 @@ from app.schemas.truth_fact import Transferability, TransformationOperation
 from app.services.cv_content_plan_policy import (
     CV_CONTENT_POLICY_VERSION,
     FACT_TYPE_PRIORITY,
+    OWNER_ENTITY_TYPE_BY_FACT_TYPE,
     SECTION_ORDER,
     requires_employment_entity_grouping,
     requires_employment_scope_grouping,
@@ -57,7 +58,7 @@ from app.services.fact_selection_policy import compute_target_context_fingerprin
 from app.services.truth_fingerprint import canonical_json_bytes
 
 
-CV_CONTENT_PLAN_SCHEMA_VERSION = "cv-content-plan-schema-v1"
+CV_CONTENT_PLAN_SCHEMA_VERSION = "cv-content-plan-schema-v2"
 
 PLANNED_FACT_USE_FINGERPRINT_VERSION = "cv-content-plan-planned-fact-use-v1"
 EXPERIENCE_ENTRY_FINGERPRINT_VERSION = "cv-content-plan-experience-entry-v1"
@@ -442,6 +443,26 @@ def build_cv_content_plan(
     required_entity_type_keys = required_entity_ids | required_employment_scope_ids
     if required_entity_type_keys - set(entity_types.keys()):
         violations.add("entity_types")
+
+    # Stage P4.5a: for every deduplicated decision whose fact_type owns a
+    # closed non-employment entity type (EDUCATION_DEGREE/CERTIFICATION_NAME/
+    # COURSE_NAME/LANGUAGE_NAME), the caller-supplied entity_types snapshot
+    # must resolve decision.entity_id to exactly that EntityType. This check
+    # runs over every decision regardless of its P3 outcome (SELECTED,
+    # APPROVAL_REQUIRED, BLOCKED, EXCLUDED, NOT_RELEVANT) and regardless of
+    # future conflict membership -- owner identity is an input-snapshot
+    # integrity concern, not a placement rule, so it is evaluated here during
+    # preflight, before any result partition. A missing entity_id is already
+    # covered by the "entity_types" violation above; this only adds the
+    # distinct type-mismatch case.
+    for decision in decisions_list:
+        expected_owner_type = OWNER_ENTITY_TYPE_BY_FACT_TYPE.get(decision.fact_type)
+        if expected_owner_type is None:
+            continue
+        actual_owner_type = entity_types.get(decision.entity_id)
+        if actual_owner_type is not None and actual_owner_type != expected_owner_type:
+            violations.add("owner_entity_type_mismatch")
+            break
 
     if violations:
         return CvContentPlanBuildResult(

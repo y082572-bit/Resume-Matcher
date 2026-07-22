@@ -9,7 +9,12 @@ import hashlib
 from datetime import datetime, timezone
 from uuid import uuid4
 
+import pytest
+from pydantic import ValidationError
+
 from app.schemas.cv_content_plan import (
+    CV_CONTENT_PLAN_SCHEMA_VERSION,
+    CvContentPlan,
     CvContentPlanStatus,
     CvContentPlanViolationCode,
     CvFreshnessStatus,
@@ -223,7 +228,7 @@ def test_content_policy_change_is_stale() -> None:
     d = _decision(target_context=tc, fact_type="SKILL", target_scope="SKILLS")
     plan = _build(tc, [d]).plan
     previous = replay_input_from_plan(plan)
-    current = previous.model_copy(update={"content_policy_version": "cv-content-policy-v2"})
+    current = previous.model_copy(update={"content_policy_version": "cv-content-policy-v99"})
     assert is_cv_content_plan_stale(previous, current)
     assert "content_policy_version" in stale_fields(previous, current)
 
@@ -265,7 +270,7 @@ def test_no_current_replay_input_gives_freshness_not_verified() -> None:
     tc = _target_context()
     d = _decision(target_context=tc, fact_type="SKILL", target_scope="SKILLS")
     plan = _build(tc, [d]).plan
-    result = validate_cv_content_plan(plan, _decisions_by_fp([d]))
+    result = validate_cv_content_plan(plan, _decisions_by_fp([d]), entity_types={})
     assert result.freshness_status == CvFreshnessStatus.FRESHNESS_NOT_VERIFIED
     assert result.p5_ready is False
 
@@ -274,8 +279,8 @@ def test_stale_plan_is_never_p5_ready() -> None:
     tc = _target_context()
     d = _decision(target_context=tc, fact_type="SKILL", target_scope="SKILLS")
     plan = _build(tc, [d]).plan
-    current = replay_input_from_plan(plan).model_copy(update={"content_policy_version": "cv-content-policy-v2"})
-    result = validate_cv_content_plan(plan, _decisions_by_fp([d]), current_replay_input=current)
+    current = replay_input_from_plan(plan).model_copy(update={"content_policy_version": "cv-content-policy-v99"})
+    result = validate_cv_content_plan(plan, _decisions_by_fp([d]), entity_types={}, current_replay_input=current)
     assert result.freshness_status == CvFreshnessStatus.STALE
     assert result.p5_ready is False
 
@@ -285,7 +290,7 @@ def test_fresh_valid_plan_is_p5_ready() -> None:
     d = _decision(target_context=tc, fact_type="SKILL", target_scope="SKILLS")
     plan = _build(tc, [d]).plan
     current = replay_input_from_plan(plan)
-    result = validate_cv_content_plan(plan, _decisions_by_fp([d]), current_replay_input=current)
+    result = validate_cv_content_plan(plan, _decisions_by_fp([d]), entity_types={}, current_replay_input=current)
     assert result.structural_status == CvStructuralValidationStatus.VALID
     assert result.freshness_status == CvFreshnessStatus.FRESH
     assert result.p5_ready is True
@@ -416,7 +421,7 @@ def test_validator_marks_reordered_replay_as_stale() -> None:
         (item[0], 1 - item[1], item[2]) for item in previous.employment_entry_orders
     )
     current = previous.model_copy(update={"employment_entry_orders": swapped})
-    result = validate_cv_content_plan(plan, _decisions_by_fp(decisions), current_replay_input=current)
+    result = validate_cv_content_plan(plan, _decisions_by_fp(decisions), entity_types={}, current_replay_input=current)
     assert result.freshness_status == CvFreshnessStatus.STALE
 
 
@@ -431,7 +436,7 @@ def test_validator_reordered_replay_is_not_p5_ready() -> None:
         (item[0], 1 - item[1], item[2]) for item in previous.employment_entry_orders
     )
     current = previous.model_copy(update={"employment_entry_orders": swapped})
-    result = validate_cv_content_plan(plan, _decisions_by_fp(decisions), current_replay_input=current)
+    result = validate_cv_content_plan(plan, _decisions_by_fp(decisions), entity_types={}, current_replay_input=current)
     assert result.p5_ready is False
 
 
@@ -442,7 +447,7 @@ def test_validator_identical_employment_order_stays_fresh() -> None:
         tc, [eid_a, eid_b], employment_entry_order={eid_a: 0, eid_b: 1}
     )
     current = replay_input_from_plan(plan)
-    result = validate_cv_content_plan(plan, _decisions_by_fp(decisions), current_replay_input=current)
+    result = validate_cv_content_plan(plan, _decisions_by_fp(decisions), entity_types={}, current_replay_input=current)
     assert result.freshness_status == CvFreshnessStatus.FRESH
     assert result.p5_ready is True
 
@@ -538,7 +543,7 @@ def test_partition_violation_is_invalid() -> None:
     d = _decision(target_context=tc, fact_type="SKILL", target_scope="SKILLS")
     plan = _build(tc, [d]).plan
     tampered = plan.model_copy(update={"source_decision_fingerprints": ()})
-    result = validate_cv_content_plan(tampered, _decisions_by_fp([d]))
+    result = validate_cv_content_plan(tampered, _decisions_by_fp([d]), entity_types={})
     assert result.structural_status == CvStructuralValidationStatus.INVALID
     assert any(
         v.violation_code == CvContentPlanViolationCode.SOURCE_PARTITION_INCOMPLETE for v in result.violations
@@ -550,7 +555,7 @@ def test_fingerprint_mismatch_is_invalid() -> None:
     d = _decision(target_context=tc, fact_type="SKILL", target_scope="SKILLS")
     plan = _build(tc, [d]).plan
     tampered = plan.model_copy(update={"content_plan_fingerprint": "1" * 64})
-    result = validate_cv_content_plan(tampered, _decisions_by_fp([d]))
+    result = validate_cv_content_plan(tampered, _decisions_by_fp([d]), entity_types={})
     assert result.structural_status == CvStructuralValidationStatus.INVALID
     assert any(v.violation_code == CvContentPlanViolationCode.FINGERPRINT_MISMATCH for v in result.violations)
 
@@ -572,7 +577,7 @@ def test_employment_mismatch_is_invalid() -> None:
         tampered_experience if s.section == CvSection.EXPERIENCE else s for s in plan.sections
     )
     tampered_plan = plan.model_copy(update={"sections": new_sections})
-    result = validate_cv_content_plan(tampered_plan, _decisions_by_fp([d]))
+    result = validate_cv_content_plan(tampered_plan, _decisions_by_fp([d]), entity_types={})
     assert result.structural_status == CvStructuralValidationStatus.INVALID
     assert any(
         v.violation_code == CvContentPlanViolationCode.EMPLOYMENT_GROUPING_MISMATCH for v in result.violations
@@ -592,7 +597,7 @@ def test_duplicate_planned_fact_is_invalid() -> None:
         tampered_competencies if s.section == CvSection.COMPETENCIES else s for s in plan.sections
     )
     tampered_plan = plan.model_copy(update={"sections": new_sections})
-    result = validate_cv_content_plan(tampered_plan, _decisions_by_fp([d]))
+    result = validate_cv_content_plan(tampered_plan, _decisions_by_fp([d]), entity_types={})
     assert result.structural_status == CvStructuralValidationStatus.INVALID
     assert any(
         v.violation_code == CvContentPlanViolationCode.DUPLICATE_FACT_IN_PLANNED_CONTENT
@@ -613,7 +618,7 @@ def test_profile_multi_fact_is_invalid() -> None:
     )
     new_sections = tuple(tampered_profile if s.section == CvSection.PROFILE else s for s in plan.sections)
     tampered_plan = plan.model_copy(update={"sections": new_sections})
-    result = validate_cv_content_plan(tampered_plan, _decisions_by_fp([d]))
+    result = validate_cv_content_plan(tampered_plan, _decisions_by_fp([d]), entity_types={})
     assert result.structural_status == CvStructuralValidationStatus.INVALID
     assert any(v.violation_code == CvContentPlanViolationCode.PROFILE_MULTIPLE_FACTS for v in result.violations)
 
@@ -641,7 +646,7 @@ def test_budget_exceeded_gives_requires_review_and_non_fatal_violation() -> None
     )
     plan = result.plan
     assert plan.plan_status == CvContentPlanStatus.REQUIRES_REVIEW
-    validation = validate_cv_content_plan(plan, _decisions_by_fp([d1, d2]))
+    validation = validate_cv_content_plan(plan, _decisions_by_fp([d1, d2]), entity_types={})
     assert validation.structural_status == CvStructuralValidationStatus.VALID
     assert any(
         v.violation_code == CvContentPlanViolationCode.SECTION_BUDGET_EXCEEDED for v in validation.violations
@@ -653,6 +658,288 @@ def test_validator_is_fail_closed_on_decision_not_found() -> None:
     tc = _target_context()
     d = _decision(target_context=tc, fact_type="SKILL", target_scope="SKILLS")
     plan = _build(tc, [d]).plan
-    result = validate_cv_content_plan(plan, {})
+    result = validate_cv_content_plan(plan, {}, entity_types={})
     assert result.structural_status == CvStructuralValidationStatus.INVALID
     assert any(v.violation_code == CvContentPlanViolationCode.DECISION_NOT_FOUND for v in result.violations)
+
+
+# -- Stage P4.5a: validator owner EntityType fail-closed checks --
+
+
+def test_validator_requires_entity_types_keyword_argument() -> None:
+    tc = _target_context()
+    d = _decision(target_context=tc, fact_type="SKILL", target_scope="SKILLS")
+    plan = _build(tc, [d]).plan
+    with pytest.raises(TypeError):
+        validate_cv_content_plan(plan, _decisions_by_fp([d]))
+
+
+def test_validator_missing_owner_type_is_structural_invalid() -> None:
+    tc = _target_context()
+    entity_id = uuid4()
+    d = _decision(target_context=tc, entity_id=entity_id, fact_type="COURSE_NAME", target_scope="COURSES")
+    plan = _build(tc, [d], entity_types={entity_id: EntityType.COURSE}).plan
+    result = validate_cv_content_plan(plan, _decisions_by_fp([d]), entity_types={})
+    assert result.structural_status == CvStructuralValidationStatus.INVALID
+    assert any(
+        v.violation_code == CvContentPlanViolationCode.OWNER_ENTITY_TYPE_MISSING for v in result.violations
+    )
+    assert result.p5_ready is False
+
+
+def test_validator_mismatched_owner_type_is_structural_invalid() -> None:
+    tc = _target_context()
+    entity_id = uuid4()
+    d = _decision(target_context=tc, entity_id=entity_id, fact_type="COURSE_NAME", target_scope="COURSES")
+    plan = _build(tc, [d], entity_types={entity_id: EntityType.COURSE}).plan
+    result = validate_cv_content_plan(
+        plan, _decisions_by_fp([d]), entity_types={entity_id: EntityType.SKILL}
+    )
+    assert result.structural_status == CvStructuralValidationStatus.INVALID
+    assert any(
+        v.violation_code == CvContentPlanViolationCode.OWNER_ENTITY_TYPE_MISMATCH for v in result.violations
+    )
+    assert result.p5_ready is False
+
+
+def test_validator_owner_check_covers_planned_decision() -> None:
+    tc = _target_context()
+    entity_id = uuid4()
+    d = _decision(target_context=tc, entity_id=entity_id, fact_type="LANGUAGE_NAME", target_scope="LANGUAGES")
+    plan = _build(tc, [d], entity_types={entity_id: EntityType.LANGUAGE}).plan
+    result = validate_cv_content_plan(
+        plan, _decisions_by_fp([d]), entity_types={entity_id: EntityType.SKILL}
+    )
+    assert any(
+        v.violation_code == CvContentPlanViolationCode.OWNER_ENTITY_TYPE_MISMATCH
+        and v.decision_fingerprint == d.decision_fingerprint
+        for v in result.violations
+    )
+
+
+def test_validator_owner_check_covers_pending_decision() -> None:
+    tc = _target_context()
+    entity_id = uuid4()
+    d = _decision(
+        target_context=tc,
+        entity_id=entity_id,
+        fact_type="LANGUAGE_NAME",
+        target_scope="LANGUAGES",
+        decision=SelectionDecisionOutcome.APPROVAL_REQUIRED,
+    )
+    plan = _build(tc, [d], entity_types={entity_id: EntityType.LANGUAGE}).plan
+    assert len(plan.pending_approvals) == 1
+    result = validate_cv_content_plan(
+        plan, _decisions_by_fp([d]), entity_types={entity_id: EntityType.SKILL}
+    )
+    assert any(
+        v.violation_code == CvContentPlanViolationCode.OWNER_ENTITY_TYPE_MISMATCH
+        and v.decision_fingerprint == d.decision_fingerprint
+        for v in result.violations
+    )
+
+
+def test_validator_owner_check_covers_omitted_decision() -> None:
+    tc = _target_context()
+    entity_id = uuid4()
+    d = _decision(
+        target_context=tc,
+        entity_id=entity_id,
+        fact_type="LANGUAGE_NAME",
+        target_scope="LANGUAGES",
+        decision=SelectionDecisionOutcome.BLOCKED,
+    )
+    plan = _build(tc, [d], entity_types={entity_id: EntityType.LANGUAGE}).plan
+    assert len(plan.omitted_facts) == 1
+    result = validate_cv_content_plan(
+        plan, _decisions_by_fp([d]), entity_types={entity_id: EntityType.SKILL}
+    )
+    assert any(
+        v.violation_code == CvContentPlanViolationCode.OWNER_ENTITY_TYPE_MISMATCH
+        and v.decision_fingerprint == d.decision_fingerprint
+        for v in result.violations
+    )
+
+
+def test_validator_owner_check_covers_conflict_member() -> None:
+    tc = _target_context()
+    entity_id = uuid4()
+    fact_id = uuid4()
+    d1 = _decision(
+        target_context=tc,
+        fact_id=fact_id,
+        entity_id=entity_id,
+        fact_type="LANGUAGE_NAME",
+        target_scope="LANGUAGES",
+        salt="a",
+    )
+    d2 = _decision(
+        target_context=tc,
+        fact_id=fact_id,
+        entity_id=entity_id,
+        fact_type="LANGUAGE_NAME",
+        target_scope="LANGUAGES",
+        salt="b",
+    )
+    plan = _build(tc, [d1, d2], entity_types={entity_id: EntityType.LANGUAGE}).plan
+    assert len(plan.conflicts) == 1
+    result = validate_cv_content_plan(
+        plan, _decisions_by_fp([d1, d2]), entity_types={entity_id: EntityType.SKILL}
+    )
+    mismatch_fps = {
+        v.decision_fingerprint
+        for v in result.violations
+        if v.violation_code == CvContentPlanViolationCode.OWNER_ENTITY_TYPE_MISMATCH
+    }
+    assert {d1.decision_fingerprint, d2.decision_fingerprint} <= mismatch_fps
+
+
+def test_validator_owner_check_is_not_limited_to_sections() -> None:
+    """A BLOCKED decision never appears in plan.sections at all -- the owner
+    check must still catch its mismatch."""
+
+    tc = _target_context()
+    entity_id = uuid4()
+    d = _decision(
+        target_context=tc,
+        entity_id=entity_id,
+        fact_type="LANGUAGE_NAME",
+        target_scope="LANGUAGES",
+        decision=SelectionDecisionOutcome.BLOCKED,
+    )
+    plan = _build(tc, [d], entity_types={entity_id: EntityType.LANGUAGE}).plan
+    for section in plan.sections:
+        uses = section.planned_fact_uses if section.kind == "FLAT" else ()
+        assert all(u.fact_id != d.fact_id for u in uses)
+    result = validate_cv_content_plan(
+        plan, _decisions_by_fp([d]), entity_types={entity_id: EntityType.SKILL}
+    )
+    assert any(
+        v.violation_code == CvContentPlanViolationCode.OWNER_ENTITY_TYPE_MISMATCH for v in result.violations
+    )
+
+
+def test_validator_correct_owner_stays_valid() -> None:
+    tc = _target_context()
+    entity_id = uuid4()
+    d = _decision(target_context=tc, entity_id=entity_id, fact_type="COURSE_NAME", target_scope="COURSES")
+    plan = _build(tc, [d], entity_types={entity_id: EntityType.COURSE}).plan
+    result = validate_cv_content_plan(
+        plan, _decisions_by_fp([d]), entity_types={entity_id: EntityType.COURSE}
+    )
+    assert result.structural_status == CvStructuralValidationStatus.VALID
+    assert not any(
+        v.violation_code
+        in (CvContentPlanViolationCode.OWNER_ENTITY_TYPE_MISSING, CvContentPlanViolationCode.OWNER_ENTITY_TYPE_MISMATCH)
+        for v in result.violations
+    )
+
+
+def test_validator_unrelated_fact_types_get_no_new_owner_restriction() -> None:
+    """SKILL is outside the closed P4.5a fact_type set: any entity_types
+    mapping (even an empty one) must never trigger the new owner checks."""
+
+    tc = _target_context()
+    d = _decision(target_context=tc, fact_type="SKILL", target_scope="SKILLS")
+    plan = _build(tc, [d]).plan
+    result = validate_cv_content_plan(plan, _decisions_by_fp([d]), entity_types={})
+    assert not any(
+        v.violation_code
+        in (CvContentPlanViolationCode.OWNER_ENTITY_TYPE_MISSING, CvContentPlanViolationCode.OWNER_ENTITY_TYPE_MISMATCH)
+        for v in result.violations
+    )
+    assert result.structural_status == CvStructuralValidationStatus.VALID
+
+
+# -- Stage P4.5a: schema version, fingerprints, replay --
+
+
+def test_schema_version_is_cv_content_plan_schema_v2() -> None:
+    assert CV_CONTENT_PLAN_SCHEMA_VERSION == "cv-content-plan-schema-v2"
+
+
+def test_old_schema_v1_literal_is_rejected() -> None:
+    tc = _target_context()
+    d = _decision(target_context=tc, fact_type="SKILL", target_scope="SKILLS")
+    plan = _build(tc, [d]).plan
+    payload = plan.model_dump(mode="json")
+    payload["schema_version"] = "cv-content-plan-schema-v1"
+    with pytest.raises(ValidationError):
+        CvContentPlan.model_validate(payload)
+
+
+def test_adding_courses_changes_section_fingerprint() -> None:
+    tc = _target_context()
+    entity_id = uuid4()
+    empty_plan = _build(tc, [_decision(target_context=tc, fact_type="SKILL", target_scope="SKILLS")]).plan
+    course_decision = _decision(
+        target_context=tc, entity_id=entity_id, fact_type="COURSE_NAME", target_scope="COURSES"
+    )
+    with_course_plan = _build(tc, [course_decision], entity_types={entity_id: EntityType.COURSE}).plan
+    empty_courses = next(s for s in empty_plan.sections if s.section == CvSection.COURSES)
+    filled_courses = next(s for s in with_course_plan.sections if s.section == CvSection.COURSES)
+    assert empty_courses.section_plan_fingerprint != filled_courses.section_plan_fingerprint
+
+
+def test_adding_course_name_changes_plan_fingerprint() -> None:
+    tc = _target_context()
+    entity_id = uuid4()
+    without_course = _build(tc, [_decision(target_context=tc, fact_type="SKILL", target_scope="SKILLS")]).plan
+    course_decision = _decision(
+        target_context=tc, entity_id=entity_id, fact_type="COURSE_NAME", target_scope="COURSES"
+    )
+    with_course = _build(
+        tc,
+        [_decision(target_context=tc, fact_type="SKILL", target_scope="SKILLS"), course_decision],
+        entity_types={entity_id: EntityType.COURSE},
+    ).plan
+    assert without_course.content_plan_fingerprint != with_course.content_plan_fingerprint
+
+
+def test_content_policy_v2_is_in_replay_input() -> None:
+    tc = _target_context()
+    d = _decision(target_context=tc, fact_type="SKILL", target_scope="SKILLS")
+    plan = _build(tc, [d]).plan
+    replay_input = replay_input_from_plan(plan)
+    assert replay_input.content_policy_version == "cv-content-policy-v2"
+
+
+def test_replay_input_gained_no_new_field_for_courses() -> None:
+    expected_fields = {
+        "target_context_fingerprint",
+        "job_or_application_id",
+        "fact_selection_decision_fingerprints",
+        "fact_revisions",
+        "fact_content_fingerprints",
+        "fact_types",
+        "permission_snapshot_fingerprints",
+        "employment_entry_orders",
+        "selection_policy_version",
+        "transformation_policy_version",
+        "content_policy_version",
+        "budget_profile_fingerprint",
+        "career_positioning_snapshot_fingerprint",
+        "pending_approval_states",
+    }
+    from app.schemas.cv_content_plan import CvContentPlanReplayInput
+
+    assert set(CvContentPlanReplayInput.model_fields) == expected_fields
+
+
+def test_employment_entry_orders_still_works_alongside_course_name() -> None:
+    tc = _target_context()
+    employment_id, course_id = uuid4(), uuid4()
+    header = _header_decision(tc, employment_id)
+    course_decision = _decision(
+        target_context=tc, entity_id=course_id, fact_type="COURSE_NAME", target_scope="COURSES"
+    )
+    entity_types = {employment_id: EntityType.EMPLOYMENT, course_id: EntityType.COURSE}
+    plan = build_cv_content_plan(
+        target_context=tc,
+        decisions=[header, course_decision],
+        entity_types=entity_types,
+        employment_entry_order={employment_id: 0},
+    ).plan
+    replay_input = replay_input_from_plan(plan)
+    assert len(replay_input.employment_entry_orders) == 1
+    assert replay_input.employment_entry_orders[0][0] == employment_id

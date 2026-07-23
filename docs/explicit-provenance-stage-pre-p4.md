@@ -245,40 +245,114 @@ the positioning level, the target narrative emphasis, and the approved
 supporting fact fingerprints actually used — each of these independently
 changes `context_fingerprint`.
 
-**`RoleStrategyContext` is not yet consumed by P4 in this stage.** No P4
-file was modified, and no new P4 entrypoint was created.
+**`RoleStrategyContext` is now mandatorily consumed by strategy-aware P3
+and the `ROLE_STRATEGY_INTEGRATED` P4 entrypoint** (Stage 10D-A). See
+"Mandatory PRE-P4 → P3 → P4 integration" below.
 
 ### What `ready_for_p4` means in this stage
 
-`ready_for_p4 = True` means only: *PRE-P4 core is complete and would be
-ready for a future, mandatory integration with P4.* It does **not** mean:
+`ready_for_p4 = True` means: *PRE-P4 core is complete and this
+`RoleStrategyContext` is eligible to be handed to
+`role_strategy_prep4_revalidation.revalidate_prep4` for the mandatory P3/P4
+integration.* It does **not** mean:
 
-- that P4 already consumes `RoleStrategyContext`,
-- that P4 already verifies the analysis or thesis fingerprint,
-- that P4's own replay already includes the analysis or thesis,
-- that the existing legacy P4 entrypoint cannot still be reached without
-  going through PRE-P4 at all.
+- that `ready_for_p4`, `ready_for_candidacy_thesis`, or any other
+  caller-supplied boolean is itself trusted by that revalidation — every
+  fingerprint is independently re-derived and re-compared instead,
+- that a stale `RoleStrategyContext` will be silently accepted downstream:
+  `revalidate_prep4` fails closed on any mismatch,
+- that the existing legacy P4 entrypoint (`build_cv_content_plan`) has
+  been removed: it remains reachable without going through PRE-P4 at all,
+  strategy-blind, exactly as before.
 
-## Deferred mandatory PRE-P4 → P4 integration gate
+## Mandatory PRE-P4 → P3 → P4 integration (Stage 10D-A)
 
-A separate, future, mandatory stage — **PRE-P4 TO P4 MANDATORY INTEGRATION
-GATE** — is required before P4 may be modified or before a new,
-mandatory P4 v2 entrypoint may be added. That future stage must add tests
-(none of which exist yet, and none of which are simulated here) proving
-that the existing P4:
+The integration deferred by the previous stage of this document is now
+implemented:
 
-- requires a `RoleStrategyContext` as input,
-- does not accept an arbitrary PRE-P4-shaped dict as a substitute,
-- verifies the Job Analysis result fingerprint,
-- verifies the Candidacy Thesis result fingerprint,
-- changes P4's own replay/staleness outcome when the Job Analysis changes,
-- changes P4's own replay/staleness outcome when the Candidacy Thesis
-  changes,
-- changes P4's own replay/staleness outcome when the priority evidence
-  categories change,
-- cannot be bypassed by a new production flow that skips PRE-P4.
+```
+JobPostingAnalysisResult
++ CandidacyThesisResult (carrying RoleStrategyContext)
+→ RoleStrategyFactSelectionInput
+→ role_strategy_prep4_revalidation.revalidate_prep4          (full, independent re-check)
+→ strategy_fact_selection_builder.build_fact_selection_with_role_strategy   (strategy-aware P3)
+→ strategy_fact_selection_validator.validate_strategy_fact_selection_result (independent re-check)
+→ cv_content_plan_integrated_builder.build_role_strategy_integrated_cv_content_plan (ROLE_STRATEGY_INTEGRATED P4)
+```
 
-This stage deliberately implements none of the above.
+`RoleStrategyFactSelectionInput` (`app/schemas/strategy_fact_selection.py`)
+is a closed (`extra="forbid"`) bundle of the *complete* upstream chain —
+the `JobPostingSnapshot`, its evidence segments, both PRE-P4 contexts, both
+PRE-P4 results, both current replay inputs, the `RoleStrategyContext`, the
+`ApprovedFactPayloadSet`, and the `TargetContext` — never a bare
+fingerprint, a bare `ready_for_p4` flag, or an arbitrary dict. A model
+validator enforces `role_strategy_context == candidacy_thesis_result.role_strategy_context`;
+`integration_input_fingerprint` is never trusted from the caller — every
+consumer (`build_fact_selection_with_role_strategy`,
+`validate_strategy_fact_selection_result`) independently recomputes it via
+`strategy_fact_selection_builder.compute_integration_input_fingerprint`.
+
+### `revalidate_prep4`: full, independent PRE-P4 re-check
+
+`role_strategy_prep4_revalidation.revalidate_prep4` never trusts a stored
+fingerprint or readiness flag. For Job Analysis it re-derives
+`result_fingerprint` from the result's own stored fields, re-derives
+`analysis_context_fingerprint`, independently re-runs
+`evaluate_job_analysis_freshness` against the caller's current replay
+input, and re-checks readiness from `status`/`role_objective` directly
+(never from `ready_for_candidacy_thesis`). For Candidacy Thesis it does the
+same, plus re-derives every `CandidacyEvidenceMapping` fingerprint and the
+approved payload set fingerprint. For `RoleStrategyContext` it recomputes
+`context_fingerprint` and cross-checks every field it claims to summarize
+(analysis/thesis result and replay fingerprints, posting fingerprint, role
+objective fingerprint, hypothesis fingerprints, positioning level, priority
+categories, target narrative emphasis) against the upstream objects
+themselves. Any mismatch is a closed `Prep4RevalidationViolationCode` and a
+fail-closed `Prep4RevalidationStatus.FAILED` — strategy-aware P3 refuses to
+run at all when this fails.
+
+### Strategy-aware P3: the `NOT_RELEVANT` → `SELECTED` override
+
+Legacy P3 (`fact_selection_policy.select_fact`) remains the sole authority
+on eligibility, transferability, P1 policy, and permission — strategy never
+widens what it decides. `BLOCKED`, `EXCLUDED`, and `APPROVAL_REQUIRED` can
+never be overridden; this is enforced both by
+`strategy_fact_selection_policy.evaluate_not_relevant_override` and,
+independently, by `StrategyAwareFactSelectionDecision`'s own model
+validators. The *only* thing strategy may do is conditionally raise an
+advisory `NOT_RELEVANT` outcome (produced by an existing
+`CareerPositioningSignal`) to `SELECTED` — and only when **all** of the
+following hold: PRE-P4 revalidation passed; the base decision is exactly
+`NOT_RELEVANT`; exactly one `CandidacyEvidenceMapping` exists for the exact
+`(fact_id, entity_id, fact_revision)`; an `ApprovedFactPayloadSnapshot`
+exists for that identity with a matching `fact_content_fingerprint`; and
+`mapping.payload_fingerprint` matches that snapshot's own
+`payload_fingerprint`. A category-only match (the fact's `fact_type`
+merely belongs to a priority `RoleEvidenceCategory`) never overrides
+`NOT_RELEVANT` — only an *exact* thesis-supporting fact does. The override
+carries its own closed `StrategyOverrideReasonCode` and
+`strategy_decision_fingerprint`; `base_decision`/`base_decision_fingerprint`
+are never mutated.
+
+Facts are additionally classified into one of three closed
+`StrategyRankTier` values (`ROLE_EVIDENCE_CATEGORY_TO_FACT_TYPES` in
+`strategy_fact_selection_policy.py` is the single, versioned,
+closed-set mapping — never inferred from a shared `employment_scope_entity_id`
+or `entity_id`): an exact thesis mapping is `TIER_0`, a real `fact_type`
+membership in a priority `RoleEvidenceCategory` is `TIER_1`, everything
+else is `TIER_2_LEGACY_ONLY`. A fresh `RoleStrategyContext.positioning_level`
+in `{EXPERT, SPECIALIST, OPERATIONAL}` may additionally request
+`FLATTEN_FOR_LOWER_ROLE` instead of the caller's baseline operation —
+`EXECUTIVE`/`SENIOR_LEADERSHIP` never do, and `MANAGEMENT` does not force
+it — but only when the existing P1 `TruthTransformationPolicyRegistry`
+already allows that operation for the fact's exact `(fact_type,
+target_scope)`; legacy `select_fact` still has the final say.
+
+### P4 integration
+
+See `docs/explicit-provenance-stage-p4.md` for `CvContentPlanMode`, the
+integrated ranking/budget/ordering behavior, and the downstream freshness
+guarantee through P5a/P5b/P5.5.
 
 ## Fingerprints
 
@@ -322,11 +396,23 @@ a match score, never an arbitrary free-text context, never a
 
 ## Isolation
 
-None of PRE-P4's 13 core modules import `app.llm`, `litellm`, the
+None of PRE-P4's 13 core modules, nor the Stage 10D-A integration modules
+(`role_strategy_prep4_revalidation.py`, `strategy_fact_selection_policy.py`,
+`strategy_fact_selection_builder.py`, `strategy_fact_selection_validator.py`,
+`strategy_fact_selection_replay.py`, `cv_content_plan_strategy_ranking.py`,
+`cv_content_plan_integrated_builder.py`), import `app.llm`, `litellm`, the
 database, SQLAlchemy, a router, the frontend, DOCX/PDF rendering, or the
 Career Positioning Engine (`app/services/career_positioning.py`,
 `app/services/career_positioning_report.py`,
-`app/schemas/career_positioning.py`). No P4 file was modified. No new P4
-entrypoint was created. `career_positioning_snapshot_fingerprint` is never
-used as a substitute for `RoleStrategyContext`, and this stage never
-declares that P4 already requires PRE-P4.
+`app/schemas/career_positioning.py`) — a `CareerPositioningSignal` may
+still be passed through to legacy `select_fact` exactly as before, always
+advisory-only. `career_positioning_snapshot_fingerprint` is never used as a
+substitute for `RoleStrategyContext`.
+
+Stage 10D-A *does* modify P4 (see `docs/explicit-provenance-stage-p4.md`
+for the full change list) — this is the mandatory integration the earlier
+version of this document deferred. Legacy P3
+(`fact_selection_policy.py`/`fact_selection_replay.py`) and legacy
+`select_fact` are unmodified and behave exactly as before; the legacy P4
+entrypoint (`build_cv_content_plan`) is also behaviorally unmodified and
+remains reachable without going through PRE-P4 at all.

@@ -8,7 +8,12 @@ current values for those same fields.
 
 from __future__ import annotations
 
-from app.schemas.cv_content_plan import CvContentPlan, CvContentPlanReplayInput
+from app.schemas.candidacy_thesis import RoleStrategyContext
+from app.schemas.cv_content_plan import CvContentPlan, CvContentPlanMode, CvContentPlanReplayInput
+from app.schemas.strategy_fact_selection import (
+    StrategyAwareFactSelectionResult,
+    StrategyFactRankingInput,
+)
 
 
 def replay_input_from_plan(plan: CvContentPlan) -> CvContentPlanReplayInput:
@@ -73,6 +78,39 @@ def replay_input_from_plan(plan: CvContentPlan) -> CvContentPlanReplayInput:
         budget_profile_fingerprint=plan.budget_profile_fingerprint,
         career_positioning_snapshot_fingerprint=plan.career_positioning_snapshot_fingerprint,
         pending_approval_states=pending_approval_states,
+        plan_mode=plan.plan_mode,
+        role_strategy_context_fingerprint=plan.role_strategy_context_fingerprint,
+        strategy_selection_result_fingerprint=plan.strategy_selection_result_fingerprint,
+        strategy_ranking_input_fingerprint=plan.strategy_ranking_input_fingerprint,
+        strategy_integration_policy_version=plan.strategy_integration_policy_version,
+    )
+
+
+def current_replay_input_for_integrated_plan(
+    plan: CvContentPlan,
+    *,
+    role_strategy_context: RoleStrategyContext,
+    strategy_selection_result: StrategyAwareFactSelectionResult,
+    strategy_ranking: StrategyFactRankingInput,
+    strategy_integration_policy_version: str,
+) -> CvContentPlanReplayInput:
+    """Build the "current" replay input for a ``ROLE_STRATEGY_INTEGRATED``
+    plan from the caller's actual current PRE-P4/strategy state -- never by
+    copying the plan's own stored strategy fields. Only the per-fact fields
+    (already sourced from the plan's own ``PlannedFactUse`` data by
+    ``replay_input_from_plan``) are reused; the four strategy fields are
+    always independently recomputed from the fresh objects passed here.
+    """
+
+    base = replay_input_from_plan(plan)
+    return base.model_copy(
+        update={
+            "plan_mode": CvContentPlanMode.ROLE_STRATEGY_INTEGRATED,
+            "role_strategy_context_fingerprint": role_strategy_context.context_fingerprint,
+            "strategy_selection_result_fingerprint": strategy_selection_result.result_fingerprint,
+            "strategy_ranking_input_fingerprint": strategy_ranking.strategy_ranking_input_fingerprint,
+            "strategy_integration_policy_version": strategy_integration_policy_version,
+        }
     )
 
 

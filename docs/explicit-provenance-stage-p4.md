@@ -493,6 +493,100 @@ against a freshly recomputed `replay_input_from_plan(plan)`.
 `plan.conflicts` is empty. P4 never starts Stage P5 itself — `p5_ready`
 is only a signal for a future caller.
 
+## Stage 10D-A: mandatory role-strategy integration
+
+P4 now has two entrypoints, distinguished by `CvContentPlan.plan_mode`
+(`CvContentPlanMode`, closed: `LEGACY` / `ROLE_STRATEGY_INTEGRATED`):
+
+- `cv_content_plan_builder.build_cv_content_plan` — the original,
+  behaviorally-unmodified legacy entrypoint. Always produces `plan_mode=LEGACY`
+  with every strategy field `None`. Existing callers, tests, and budget/
+  ordering behavior are untouched.
+- `cv_content_plan_integrated_builder.build_role_strategy_integrated_cv_content_plan`
+  — the mandatory entrypoint that consumes a real, PRE-P4-revalidated
+  `StrategyAwareFactSelectionResult` (see
+  `docs/explicit-provenance-stage-pre-p4.md`). Always produces
+  `plan_mode=ROLE_STRATEGY_INTEGRATED` with every strategy field required
+  and non-`None`. `CvContentPlan._strategy_fields_match_mode` enforces this
+  as a hard model invariant — no partial/mixed state can exist.
+
+Both entrypoints call the same private `_build_cv_content_plan_core` helper
+in `cv_content_plan_builder.py`; neither calls the other, and the
+integrated entrypoint never accepts a bare `Sequence[FactSelectionDecision]`,
+a legacy `FactSelectionResult`, `None` strategy, an empty strategy input, or
+`career_positioning_snapshot_fingerprint` as a strategy substitute (see
+`tests/integration/test_role_strategy_prep4_p3_p4_integration.py`'s
+no-bypass matrix).
+
+### Integrated ranking and budget behavior
+
+`cv_content_plan_strategy_ranking.py` provides the deterministic sort key
+used only in `ROLE_STRATEGY_INTEGRATED` mode: `(StrategyRankTier, the
+existing FACT_TYPE_PRIORITY, entity_id, fact_id, decision_fingerprint)`.
+It governs ordering within responsibilities, achievements, flat sections,
+within one employment entry, and across employment entries — never
+similarity, fuzzy text matching, embeddings, an LLM, or bare entity
+adjacency.
+
+In integrated mode, `_build_cv_content_plan_core` additionally *enforces*
+budget by rank: candidates are sorted by the strategy key, the top
+`max_facts` are kept, and the rest become `OmittedFactDecision` records
+with the new closed `OmissionReasonCode.BUDGET_RANK_EXCEEDED` — never an
+implicit drop. Legacy mode never exercises this path (`strategy_sort_key_fn`
+is always `None` there), so its budget behavior is unchanged: an
+over-budget legacy section is still flagged (`EXCEEDS_BUDGET`,
+`plan_status=REQUIRES_REVIEW`) but never trimmed.
+
+### Strategy fingerprint chain
+
+`CvContentPlan.content_plan_fingerprint` now includes `plan_mode` and the
+four strategy fields (`role_strategy_context_fingerprint`,
+`strategy_selection_result_fingerprint`, `strategy_ranking_input_fingerprint`,
+`strategy_integration_policy_version`) alongside the full, unmodified
+legacy content-plan projection — a strategy-identity-only change (same
+visible sections/facts, different `RoleStrategyContext` or a different
+`NOT_RELEVANT` override) always changes `content_plan_fingerprint`, even
+when every `PlannedFactUse` is byte-identical. `strategy_selection_result_fingerprint`
+is kept as its own explicit field (not folded only into
+`role_strategy_context_fingerprint`) because it separately carries the
+`NOT_RELEVANT` override identities, the final strategy-aware decisions, and
+the ranking assignments — none of which live on `RoleStrategyContext`
+itself.
+
+`CvContentPlanReplayInput` gained the same five fields; `replay_input_from_plan`
+reads them straight off the plan. The integrated entrypoint never builds
+its "current" replay input by only copying those stored plan fields —
+`cv_content_plan_replay.current_replay_input_for_integrated_plan` always
+recomputes the four strategy fingerprints from the caller's actual current
+`RoleStrategyContext`/`StrategyAwareFactSelectionResult`/`StrategyFactRankingInput`,
+reusing only the per-fact data `replay_input_from_plan` already derives
+from the plan's own `PlannedFactUse` entries.
+
+### Downstream freshness (P5a/P5b/P5.5)
+
+No P5a/P5b/P5.5 file was modified. Because `content_plan_fingerprint` is
+already the first field folded into every downstream replay input
+(`CvContentGenerationReplayInput`, `CvContentProposalReplayInput`,
+`ProposalSemanticValidationReplayInput`, `ApprovedCvContentReplayInput` —
+transitively, via each stage embedding the previous stage's replay
+fingerprint), a strategy-identity-only plan change propagates automatically:
+P5a, P5b, P5.5 Step 1, and P5.5 Step 2 all evaluate to `STALE` the moment
+their "current" replay input is rebuilt against the new plan — see
+`tests/unit/test_downstream_strategy_freshness.py` for the full, real
+P4 → P5a → P5b → P5.5 pipeline proof.
+
+### Legacy compatibility
+
+`build_cv_content_plan`'s public signature, budget semantics, and ordering
+are unchanged; it requires no strategy input and cannot produce a
+`ROLE_STRATEGY_INTEGRATED` plan. Existing P4 tests
+(`tests/unit/test_cv_content_plan_builder.py`,
+`tests/unit/test_cv_content_plan_policy.py`,
+`tests/unit/test_cv_content_plan_replay_and_validator.py`,
+`tests/integration/test_cv_content_plan_integration.py`) pass unmodified
+except for the schema-version bump (`cv-content-plan-schema-v2` →
+`cv-content-plan-schema-v3`) and the new replay-input field names.
+
 ## Unsupported sections (by design, for now)
 
 As of Stage P4.5a, `EDUCATION`, `CERTIFICATIONS`, `COURSES`, and `LANGUAGES`

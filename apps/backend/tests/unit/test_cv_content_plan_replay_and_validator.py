@@ -854,8 +854,8 @@ def test_validator_unrelated_fact_types_get_no_new_owner_restriction() -> None:
 # -- Stage P4.5a: schema version, fingerprints, replay --
 
 
-def test_schema_version_is_cv_content_plan_schema_v2() -> None:
-    assert CV_CONTENT_PLAN_SCHEMA_VERSION == "cv-content-plan-schema-v2"
+def test_schema_version_is_cv_content_plan_schema_v3() -> None:
+    assert CV_CONTENT_PLAN_SCHEMA_VERSION == "cv-content-plan-schema-v3"
 
 
 def test_old_schema_v1_literal_is_rejected() -> None:
@@ -920,6 +920,12 @@ def test_replay_input_gained_no_new_field_for_courses() -> None:
         "budget_profile_fingerprint",
         "career_positioning_snapshot_fingerprint",
         "pending_approval_states",
+        # -- Stage 10D-A: role-strategy integration fields --
+        "plan_mode",
+        "role_strategy_context_fingerprint",
+        "strategy_selection_result_fingerprint",
+        "strategy_ranking_input_fingerprint",
+        "strategy_integration_policy_version",
     }
     from app.schemas.cv_content_plan import CvContentPlanReplayInput
 

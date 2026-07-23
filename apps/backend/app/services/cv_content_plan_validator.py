@@ -58,6 +58,7 @@ _OMISSION_REASONS_BY_OUTCOME: dict[SelectionDecisionOutcome, frozenset[OmissionR
             OmissionReasonCode.SECTION_NOT_ALLOWED_FOR_FACT_TYPE,
             OmissionReasonCode.EMPLOYMENT_SCOPE_REQUIRED,
             OmissionReasonCode.BUDGET_NOT_AVAILABLE,
+            OmissionReasonCode.BUDGET_RANK_EXCEEDED,
         }
     ),
 }
@@ -538,6 +539,11 @@ def validate_cv_content_plan(
         omission_fingerprints=[item.omission_fingerprint for item in plan.omitted_facts],
         conflict_fingerprints=[item.conflict_fingerprint for item in plan.conflicts],
         career_positioning_snapshot_fingerprint=plan.career_positioning_snapshot_fingerprint,
+        plan_mode=plan.plan_mode,
+        role_strategy_context_fingerprint=plan.role_strategy_context_fingerprint,
+        strategy_selection_result_fingerprint=plan.strategy_selection_result_fingerprint,
+        strategy_ranking_input_fingerprint=plan.strategy_ranking_input_fingerprint,
+        strategy_integration_policy_version=plan.strategy_integration_policy_version,
     )
     if expected_content_plan_fp != plan.content_plan_fingerprint:
         _violate(

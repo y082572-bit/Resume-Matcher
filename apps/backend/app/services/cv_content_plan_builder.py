@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import hashlib
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from uuid import UUID
 
 from app.schemas.cv_content_plan import (
@@ -26,6 +26,7 @@ from app.schemas.cv_content_plan import (
     CvContentPlanBuildOutcome,
     CvContentPlanBuildResult,
     CvContentPlanConflict,
+    CvContentPlanMode,
     CvContentPlanStatus,
     CvExperienceEntryPlan,
     CvExperienceSectionPlan,
@@ -58,7 +59,7 @@ from app.services.fact_selection_policy import compute_target_context_fingerprin
 from app.services.truth_fingerprint import canonical_json_bytes
 
 
-CV_CONTENT_PLAN_SCHEMA_VERSION = "cv-content-plan-schema-v2"
+CV_CONTENT_PLAN_SCHEMA_VERSION = "cv-content-plan-schema-v3"
 
 PLANNED_FACT_USE_FINGERPRINT_VERSION = "cv-content-plan-planned-fact-use-v1"
 EXPERIENCE_ENTRY_FINGERPRINT_VERSION = "cv-content-plan-experience-entry-v1"
@@ -280,6 +281,11 @@ def compute_content_plan_fingerprint(
     omission_fingerprints: Sequence[str],
     conflict_fingerprints: Sequence[str],
     career_positioning_snapshot_fingerprint: str | None,
+    plan_mode: CvContentPlanMode = CvContentPlanMode.LEGACY,
+    role_strategy_context_fingerprint: str | None = None,
+    strategy_selection_result_fingerprint: str | None = None,
+    strategy_ranking_input_fingerprint: str | None = None,
+    strategy_integration_policy_version: str | None = None,
 ) -> str:
     content = {
         "schema_version": schema_version,
@@ -295,6 +301,11 @@ def compute_content_plan_fingerprint(
         "omission_fingerprints": sorted(omission_fingerprints),
         "conflict_fingerprints": sorted(conflict_fingerprints),
         "career_positioning_snapshot_fingerprint": career_positioning_snapshot_fingerprint,
+        "plan_mode": plan_mode.value,
+        "role_strategy_context_fingerprint": role_strategy_context_fingerprint,
+        "strategy_selection_result_fingerprint": strategy_selection_result_fingerprint,
+        "strategy_ranking_input_fingerprint": strategy_ranking_input_fingerprint,
+        "strategy_integration_policy_version": strategy_integration_policy_version,
     }
     return _fingerprint(CONTENT_PLAN_FINGERPRINT_VERSION, content)
 
@@ -306,6 +317,9 @@ def _sort_key(decision: FactSelectionDecision) -> tuple:
         str(decision.fact_id),
         decision.decision_fingerprint,
     )
+
+
+SortKeyFn = Callable[[FactSelectionDecision], tuple]
 
 
 def _build_planned_fact_use(
@@ -360,13 +374,35 @@ def _build_planned_fact_use(
 
 
 def _build_uses(
-    candidates: Sequence[FactSelectionDecision], *, target_section: CvSection
+    candidates: Sequence[FactSelectionDecision],
+    *,
+    target_section: CvSection,
+    sort_key_fn: SortKeyFn | None = None,
 ) -> tuple[PlannedFactUse, ...]:
-    ordered = sorted(candidates, key=_sort_key)
+    ordered = sorted(candidates, key=sort_key_fn or _sort_key)
     return tuple(
         _build_planned_fact_use(decision, target_section=target_section, placement_order=index)
         for index, decision in enumerate(ordered)
     )
+
+
+def _trim_to_budget(
+    candidates: Sequence[FactSelectionDecision],
+    *,
+    max_facts: int | None,
+    sort_key_fn: SortKeyFn,
+) -> tuple[list[FactSelectionDecision], list[FactSelectionDecision]]:
+    """Rank ``candidates`` by ``sort_key_fn`` and split into ``(kept, omitted)``.
+
+    Only used in ``ROLE_STRATEGY_INTEGRATED`` mode: the legacy builder never
+    calls this, so legacy budget behavior (flag-only, never a drop) is
+    completely unchanged. ``max_facts=None`` keeps every candidate.
+    """
+
+    if max_facts is None or len(candidates) <= max_facts:
+        return list(candidates), []
+    ordered = sorted(candidates, key=sort_key_fn)
+    return ordered[:max_facts], ordered[max_facts:]
 
 
 def _evaluate_budget_status(count: int, max_facts: int | None) -> SectionBudgetStatus:
@@ -386,13 +422,57 @@ def build_cv_content_plan(
     budget_profile: CvContentBudgetProfile | None = None,
     career_positioning_snapshot_fingerprint: str | None = None,
 ) -> CvContentPlanBuildResult:
-    """Build a deterministic ``CvContentPlan`` from existing P3 decisions.
+    """Build a deterministic, ``LEGACY``-mode ``CvContentPlan`` from
+    existing P3 decisions.
 
     Pure and in-memory: no database read, no ``select_fact`` call, no new
     fact or entity, no CV text, no LLM call. ``decisions`` must be
     non-empty -- an empty sequence is a caller precondition error, not a
     fail-closed data-consistency case, since P4 has no other source for
-    ``transformation_policy_version``.
+    ``transformation_policy_version``. Budget behavior is unchanged from
+    prior stages: an over-budget section is flagged (``EXCEEDS_BUDGET``,
+    ``plan_status=REQUIRES_REVIEW``) but never trimmed -- only the
+    ``ROLE_STRATEGY_INTEGRATED`` entrypoint
+    (``cv_content_plan_integrated_builder``) trims by rank.
+    """
+
+    return _build_cv_content_plan_core(
+        target_context=target_context,
+        decisions=decisions,
+        entity_types=entity_types,
+        employment_entry_order=employment_entry_order,
+        budget_profile=budget_profile,
+        career_positioning_snapshot_fingerprint=career_positioning_snapshot_fingerprint,
+        plan_mode=CvContentPlanMode.LEGACY,
+        strategy_sort_key_fn=None,
+        role_strategy_context_fingerprint=None,
+        strategy_selection_result_fingerprint=None,
+        strategy_ranking_input_fingerprint=None,
+        strategy_integration_policy_version=None,
+    )
+
+
+def _build_cv_content_plan_core(
+    *,
+    target_context: TargetContext,
+    decisions: Sequence[FactSelectionDecision],
+    entity_types: Mapping[UUID, EntityType],
+    employment_entry_order: Mapping[UUID, int] | None = None,
+    budget_profile: CvContentBudgetProfile | None = None,
+    career_positioning_snapshot_fingerprint: str | None = None,
+    plan_mode: CvContentPlanMode = CvContentPlanMode.LEGACY,
+    strategy_sort_key_fn: SortKeyFn | None = None,
+    role_strategy_context_fingerprint: str | None = None,
+    strategy_selection_result_fingerprint: str | None = None,
+    strategy_ranking_input_fingerprint: str | None = None,
+    strategy_integration_policy_version: str | None = None,
+) -> CvContentPlanBuildResult:
+    """Shared low-level P4 core. Never called directly by production code
+    outside this module and ``cv_content_plan_integrated_builder`` --
+    ``build_cv_content_plan`` (LEGACY) and
+    ``build_role_strategy_integrated_cv_content_plan``
+    (ROLE_STRATEGY_INTEGRATED) are the only two public entrypoints, and
+    neither one calls the other.
     """
 
     if not decisions:
@@ -625,6 +705,51 @@ def build_cv_content_plan(
         else:
             flat_budget_status[section] = _evaluate_budget_status(len(candidates), max_facts)
 
+    # -- Step 5b: ROLE_STRATEGY_INTEGRATED budget-rank enforcement. Never
+    # exercised in LEGACY mode (strategy_sort_key_fn is always None there),
+    # so legacy budget behavior (flag-only, never a drop) is unchanged. --
+    if strategy_sort_key_fn is not None:
+        if experience_max is not None and experience_max > 0 and experience_count > experience_max:
+            combined_experience_decisions = [
+                decision
+                for bucket in (header_by_employment, responsibility_by_employment, achievement_by_employment)
+                for items in bucket.values()
+                for decision in items
+            ]
+            _, rank_excluded = _trim_to_budget(
+                combined_experience_decisions,
+                max_facts=experience_max,
+                sort_key_fn=strategy_sort_key_fn,
+            )
+            excluded_fps = {decision.decision_fingerprint for decision in rank_excluded}
+            header_by_employment = {
+                eid: kept
+                for eid, items in header_by_employment.items()
+                if (kept := [d for d in items if d.decision_fingerprint not in excluded_fps])
+            }
+            responsibility_by_employment = {
+                eid: kept
+                for eid, items in responsibility_by_employment.items()
+                if (kept := [d for d in items if d.decision_fingerprint not in excluded_fps])
+            }
+            achievement_by_employment = {
+                eid: kept
+                for eid, items in achievement_by_employment.items()
+                if (kept := [d for d in items if d.decision_fingerprint not in excluded_fps])
+            }
+            omitted_data.extend((d, OmissionReasonCode.BUDGET_RANK_EXCEEDED) for d in rank_excluded)
+            experience_budget_status = SectionBudgetStatus.WITHIN_BUDGET
+
+        for section, candidates in list(flat_by_section.items()):
+            max_facts = budget_limits_by_section.get(section)
+            if max_facts is not None and max_facts > 0 and len(candidates) > max_facts:
+                kept, rank_excluded = _trim_to_budget(
+                    candidates, max_facts=max_facts, sort_key_fn=strategy_sort_key_fn
+                )
+                flat_by_section[section] = kept
+                omitted_data.extend((d, OmissionReasonCode.BUDGET_RANK_EXCEEDED) for d in rank_excluded)
+                flat_budget_status[section] = SectionBudgetStatus.WITHIN_BUDGET
+
     # -- Step 6: employment entry ordering. --
     employment_entry_order = employment_entry_order or {}
     employment_ids = (
@@ -651,12 +776,20 @@ def build_cv_content_plan(
     # -- Step 7: build PlannedFactUse + CvExperienceEntryPlan + sections. --
     entries: list[CvExperienceEntryPlan] = []
     for eid in ordered_employment_ids:
-        header_uses = _build_uses(header_by_employment.get(eid, []), target_section=CvSection.EXPERIENCE)
+        header_uses = _build_uses(
+            header_by_employment.get(eid, []),
+            target_section=CvSection.EXPERIENCE,
+            sort_key_fn=strategy_sort_key_fn,
+        )
         responsibility_uses = _build_uses(
-            responsibility_by_employment.get(eid, []), target_section=CvSection.EXPERIENCE
+            responsibility_by_employment.get(eid, []),
+            target_section=CvSection.EXPERIENCE,
+            sort_key_fn=strategy_sort_key_fn,
         )
         achievement_uses = _build_uses(
-            achievement_by_employment.get(eid, []), target_section=CvSection.EXPERIENCE
+            achievement_by_employment.get(eid, []),
+            target_section=CvSection.EXPERIENCE,
+            sort_key_fn=strategy_sort_key_fn,
         )
         entry_order = entry_order_by_id[eid]
         entry_order_source = entry_order_source_by_id[eid]
@@ -700,7 +833,7 @@ def build_cv_content_plan(
         if section == CvSection.EXPERIENCE:
             continue
         candidates = flat_by_section.get(section, [])
-        uses = _build_uses(candidates, target_section=section)
+        uses = _build_uses(candidates, target_section=section, sort_key_fn=strategy_sort_key_fn)
         status = flat_budget_status.get(section, SectionBudgetStatus.NOT_EVALUATED)
         fingerprint = compute_section_plan_fingerprint(
             kind="FLAT",
@@ -803,6 +936,11 @@ def build_cv_content_plan(
         omission_fingerprints=[item.omission_fingerprint for item in omitted_facts],
         conflict_fingerprints=[item.conflict_fingerprint for item in conflicts],
         career_positioning_snapshot_fingerprint=career_positioning_snapshot_fingerprint,
+        plan_mode=plan_mode,
+        role_strategy_context_fingerprint=role_strategy_context_fingerprint,
+        strategy_selection_result_fingerprint=strategy_selection_result_fingerprint,
+        strategy_ranking_input_fingerprint=strategy_ranking_input_fingerprint,
+        strategy_integration_policy_version=strategy_integration_policy_version,
     )
 
     if conflicts:
@@ -816,6 +954,7 @@ def build_cv_content_plan(
 
     plan = CvContentPlan(
         content_plan_fingerprint=content_plan_fingerprint,
+        plan_mode=plan_mode,
         content_policy_version=CV_CONTENT_POLICY_VERSION,
         selection_policy_version=common_selection_policy_version,
         transformation_policy_version=common_transformation_policy_version,
@@ -831,6 +970,10 @@ def build_cv_content_plan(
         source_decision_fingerprints=source_decision_fingerprints,
         budget_profile_fingerprint=budget_profile_fingerprint,
         career_positioning_snapshot_fingerprint=career_positioning_snapshot_fingerprint,
+        role_strategy_context_fingerprint=role_strategy_context_fingerprint,
+        strategy_selection_result_fingerprint=strategy_selection_result_fingerprint,
+        strategy_ranking_input_fingerprint=strategy_ranking_input_fingerprint,
+        strategy_integration_policy_version=strategy_integration_policy_version,
     )
 
     return CvContentPlanBuildResult(

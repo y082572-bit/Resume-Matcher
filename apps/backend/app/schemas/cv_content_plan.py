@@ -26,7 +26,18 @@ from app.schemas.truth_entity import SHA256_PATTERN
 from app.schemas.truth_fact import FACT_TYPE_PATTERN, Transferability, TransformationOperation
 
 
-CV_CONTENT_PLAN_SCHEMA_VERSION = "cv-content-plan-schema-v2"
+CV_CONTENT_PLAN_SCHEMA_VERSION = "cv-content-plan-schema-v3"
+
+
+class CvContentPlanMode(StrEnum):
+    """Whether a ``CvContentPlan`` was built by the legacy, strategy-blind
+    entrypoint or by the mandatory role-strategy-integrated entrypoint. A
+    plan can never carry a partial mix of the two: see
+    ``CvContentPlan._strategy_fields_match_mode``.
+    """
+
+    LEGACY = "LEGACY"
+    ROLE_STRATEGY_INTEGRATED = "ROLE_STRATEGY_INTEGRATED"
 
 
 class CvSection(StrEnum):
@@ -101,6 +112,11 @@ class OmissionReasonCode(StrEnum):
     #: fact_type) but the required identity is missing or does not resolve
     #: to ``EntityType.EMPLOYMENT`` in the caller-supplied snapshot.
     EMPLOYMENT_SCOPE_REQUIRED = "EMPLOYMENT_SCOPE_REQUIRED"
+    #: ROLE_STRATEGY_INTEGRATED mode only: a SELECTED, strategy-ranked fact
+    #: that lost out to higher-ranked facts within its bucket's configured
+    #: budget. Never an implicit drop -- always carries this explicit
+    #: omission record, same as any other omitted decision.
+    BUDGET_RANK_EXCEEDED = "BUDGET_RANK_EXCEEDED"
 
 
 class ConflictReasonCode(StrEnum):
@@ -338,8 +354,9 @@ class CvContentPlan(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["cv-content-plan-schema-v2"] = CV_CONTENT_PLAN_SCHEMA_VERSION
+    schema_version: Literal["cv-content-plan-schema-v3"] = CV_CONTENT_PLAN_SCHEMA_VERSION
     content_plan_fingerprint: str = Field(pattern=SHA256_PATTERN)
+    plan_mode: CvContentPlanMode = CvContentPlanMode.LEGACY
     content_policy_version: str = Field(min_length=1, max_length=64)
     selection_policy_version: str = Field(min_length=1, max_length=64)
     transformation_policy_version: str = Field(min_length=1, max_length=64)
@@ -357,6 +374,10 @@ class CvContentPlan(BaseModel):
     career_positioning_snapshot_fingerprint: str | None = Field(
         default=None, pattern=SHA256_PATTERN
     )
+    role_strategy_context_fingerprint: str | None = Field(default=None, pattern=SHA256_PATTERN)
+    strategy_selection_result_fingerprint: str | None = Field(default=None, pattern=SHA256_PATTERN)
+    strategy_ranking_input_fingerprint: str | None = Field(default=None, pattern=SHA256_PATTERN)
+    strategy_integration_policy_version: str | None = Field(default=None, max_length=64)
 
     @field_validator("sections")
     @classmethod
@@ -369,6 +390,24 @@ class CvContentPlan(BaseModel):
         if set(sections_seen) != set(CvSection):
             raise ValueError("sections must cover every CvSection value")
         return value
+
+    @model_validator(mode="after")
+    def _strategy_fields_match_mode(self) -> "CvContentPlan":
+        strategy_fields = (
+            self.role_strategy_context_fingerprint,
+            self.strategy_selection_result_fingerprint,
+            self.strategy_ranking_input_fingerprint,
+            self.strategy_integration_policy_version,
+        )
+        if self.plan_mode == CvContentPlanMode.LEGACY:
+            if any(field is not None for field in strategy_fields):
+                raise ValueError("plan_mode=LEGACY requires every strategy field to be None")
+        else:
+            if any(field is None for field in strategy_fields):
+                raise ValueError(
+                    "plan_mode=ROLE_STRATEGY_INTEGRATED requires every strategy field to be non-None"
+                )
+        return self
 
 
 class CvContentPlanBuildResult(BaseModel):
@@ -424,6 +463,11 @@ class CvContentPlanReplayInput(BaseModel):
         default=None, pattern=SHA256_PATTERN
     )
     pending_approval_states: dict[str, ApprovalState] = Field(default_factory=dict)
+    plan_mode: CvContentPlanMode = CvContentPlanMode.LEGACY
+    role_strategy_context_fingerprint: str | None = Field(default=None, pattern=SHA256_PATTERN)
+    strategy_selection_result_fingerprint: str | None = Field(default=None, pattern=SHA256_PATTERN)
+    strategy_ranking_input_fingerprint: str | None = Field(default=None, pattern=SHA256_PATTERN)
+    strategy_integration_policy_version: str | None = Field(default=None, max_length=64)
 
 
 class CvContentPlanViolation(BaseModel):

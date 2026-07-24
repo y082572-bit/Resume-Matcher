@@ -30,6 +30,7 @@ from app.schemas.cv_document_artifact import (
     ValidatedCvDocxSnapshot,
     ValidatedSnapshotReplayInput,
 )
+from app.schemas.cv_document_final_snapshot import FinalDocxSnapshot, FinalDocxSnapshotReplayInput
 from app.services.cv_document_manual_edit_detector import detect_manual_edit
 
 
@@ -199,6 +200,30 @@ def evaluate_confirmed_pdf_freshness(
         return DocumentReplayResult(freshness_status=DocumentReplayFreshnessStatus.FRESHNESS_NOT_VERIFIED)
     if current_pdf_bytes is not None and hashlib.sha256(current_pdf_bytes).hexdigest() != previous.pdf_sha256:
         return DocumentReplayResult(freshness_status=DocumentReplayFreshnessStatus.CONVERSION_MISMATCH)
+    return _evaluate_generic_freshness(previous, current)
+
+
+# -- 7. Final DOCX snapshot replay (Final DOCX Snapshot Domain Addendum) -----------
+
+
+def build_final_docx_snapshot_replay_input(
+    snapshot: FinalDocxSnapshot,
+) -> FinalDocxSnapshotReplayInput:
+    return FinalDocxSnapshotReplayInput(
+        owner_key_fingerprint=snapshot.owner_key.owner_key_fingerprint,
+        source_proposal_artifact_fingerprint=snapshot.source_proposal_artifact_fingerprint,
+        source_proposal_revision=snapshot.source_proposal_revision,
+        generated_proposal_sha256=snapshot.generated_proposal_sha256,
+        final_docx_sha256=snapshot.final_docx_sha256,
+        finalization_policy_version=snapshot.finalization_policy_version,
+        snapshot_schema_version=snapshot.snapshot_schema_version,
+    )
+
+
+def evaluate_final_docx_snapshot_freshness(
+    previous: FinalDocxSnapshotReplayInput,
+    current: FinalDocxSnapshotReplayInput | None,
+) -> DocumentReplayResult:
     return _evaluate_generic_freshness(previous, current)
 
 

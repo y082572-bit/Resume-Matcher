@@ -1,5 +1,10 @@
 # Explicit Provenance Stage P6-A: Document Artifact Lifecycle Core
 
+> **Addendum:** a separate, strictly additive `FinalDocxSnapshot` domain
+> flow (no validation, no manual confirmation, trusted source binding) is
+> documented in
+> [`explicit-provenance-stage-p6a-final-snapshot-addendum.md`](explicit-provenance-stage-p6a-final-snapshot-addendum.md).
+
 ## Purpose
 
 Stage P6-A is a pure, deterministic, fail-closed core that turns an

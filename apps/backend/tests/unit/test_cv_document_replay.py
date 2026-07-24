@@ -25,12 +25,15 @@ from app.schemas.cv_document_artifact import (
     ProposalGenerationReplayInput,
     ValidatedSnapshotReplayInput,
 )
+from app.schemas.cv_document_final_snapshot import FinalDocxSnapshotReplayInput
 from app.services.cv_document_owner_identity import build_owner_key
 from app.services.cv_document_replay import (
+    build_final_docx_snapshot_replay_input,
     compute_document_lifecycle_view,
     evaluate_approved_document_input_freshness,
     evaluate_confirmed_pdf_freshness,
     evaluate_current_proposal_observation,
+    evaluate_final_docx_snapshot_freshness,
     evaluate_pdf_conversion_freshness,
     evaluate_proposal_generation_freshness,
     evaluate_validated_snapshot_freshness,
@@ -257,6 +260,130 @@ def test_current_replay_never_reused_from_stored_input() -> None:
     signature = inspect.signature(evaluate_current_proposal_observation)
     assert "current_file_hash" not in signature.parameters
     assert set(signature.parameters) == {"expected_sha256", "current_bytes"}
+
+
+# -- final DOCX snapshot replay (Final DOCX Snapshot Domain Addendum) ---------
+
+
+def _final_snapshot_replay_input(**overrides) -> FinalDocxSnapshotReplayInput:
+    values = dict(
+        owner_key_fingerprint=_sha("owner"),
+        source_proposal_artifact_fingerprint=_sha("proposal-artifact-v1"),
+        source_proposal_revision=1,
+        generated_proposal_sha256=_sha("generated-docx-v1"),
+        final_docx_sha256=_sha("generated-docx-v1"),
+        finalization_policy_version="final-docx-finalization-policy-v1",
+        snapshot_schema_version="cv-document-final-snapshot-schema-v1",
+    )
+    values.update(overrides)
+    return FinalDocxSnapshotReplayInput(**values)
+
+
+def test_final_snapshot_replay_detects_proposal_revision_change() -> None:
+    previous = _final_snapshot_replay_input()
+    current = _final_snapshot_replay_input(source_proposal_revision=2)
+    result = evaluate_final_docx_snapshot_freshness(previous, current)
+    assert result.freshness_status == DocumentReplayFreshnessStatus.STALE
+    assert "source_proposal_revision" in result.stale_fields
+
+
+def test_final_snapshot_replay_detects_proposal_fingerprint_change() -> None:
+    previous = _final_snapshot_replay_input()
+    current = _final_snapshot_replay_input(source_proposal_artifact_fingerprint=_sha("proposal-artifact-v2"))
+    result = evaluate_final_docx_snapshot_freshness(previous, current)
+    assert result.freshness_status == DocumentReplayFreshnessStatus.STALE
+    assert "source_proposal_artifact_fingerprint" in result.stale_fields
+
+
+def test_final_snapshot_replay_detects_generated_hash_change() -> None:
+    previous = _final_snapshot_replay_input()
+    current = _final_snapshot_replay_input(generated_proposal_sha256=_sha("generated-docx-v2"))
+    result = evaluate_final_docx_snapshot_freshness(previous, current)
+    assert result.freshness_status == DocumentReplayFreshnessStatus.STALE
+    assert "generated_proposal_sha256" in result.stale_fields
+
+
+def test_final_snapshot_replay_detects_final_bytes_change() -> None:
+    previous = _final_snapshot_replay_input()
+    current = _final_snapshot_replay_input(final_docx_sha256=_sha("edited-in-word-v1"))
+    result = evaluate_final_docx_snapshot_freshness(previous, current)
+    assert result.freshness_status == DocumentReplayFreshnessStatus.STALE
+    assert "final_docx_sha256" in result.stale_fields
+
+
+def test_final_snapshot_replay_detects_finalization_policy_change() -> None:
+    previous = _final_snapshot_replay_input()
+    current = _final_snapshot_replay_input(finalization_policy_version="final-docx-finalization-policy-v2")
+    result = evaluate_final_docx_snapshot_freshness(previous, current)
+    assert result.freshness_status == DocumentReplayFreshnessStatus.STALE
+    assert "finalization_policy_version" in result.stale_fields
+
+
+def test_final_snapshot_replay_detects_owner_change() -> None:
+    previous = _final_snapshot_replay_input()
+    current = _final_snapshot_replay_input(owner_key_fingerprint=_sha("a-different-owner"))
+    result = evaluate_final_docx_snapshot_freshness(previous, current)
+    assert result.freshness_status == DocumentReplayFreshnessStatus.STALE
+    assert "owner_key_fingerprint" in result.stale_fields
+
+
+def test_final_snapshot_replay_detects_schema_version_change() -> None:
+    previous = _final_snapshot_replay_input()
+    current = _final_snapshot_replay_input(snapshot_schema_version="cv-document-final-snapshot-schema-v2")
+    result = evaluate_final_docx_snapshot_freshness(previous, current)
+    assert result.freshness_status == DocumentReplayFreshnessStatus.STALE
+    assert "snapshot_schema_version" in result.stale_fields
+
+
+def test_final_snapshot_replay_never_uses_path_or_timestamp() -> None:
+    forbidden = {"path", "filename", "locator", "timestamp", "mtime", "filesize"}
+    assert forbidden.isdisjoint(set(FinalDocxSnapshotReplayInput.model_fields))
+
+
+def test_identical_final_snapshot_replay_input_is_fresh() -> None:
+    previous = _final_snapshot_replay_input()
+    current = _final_snapshot_replay_input()
+    result = evaluate_final_docx_snapshot_freshness(previous, current)
+    assert result.freshness_status == DocumentReplayFreshnessStatus.FRESH
+
+
+def test_build_final_docx_snapshot_replay_input_from_snapshot() -> None:
+    from uuid import uuid4
+
+    from app.schemas.cv_document_artifact import ArtifactOwnerKind
+    from app.schemas.cv_document_final_snapshot import FINAL_SNAPSHOT_SCHEMA_VERSION, FinalDocxSnapshot
+    from app.services.cv_document_final_snapshot_repository import compute_final_snapshot_fingerprint
+
+    owner_key = build_owner_key(
+        person_entity_id=uuid4(), owner_kind=ArtifactOwnerKind.JOB, owner_reference_id="job-final-snapshot-replay-build"
+    )
+    generated_sha = _sha("generated-docx-build-replay")
+    fingerprint = compute_final_snapshot_fingerprint(
+        owner_key_fingerprint=owner_key.owner_key_fingerprint,
+        source_proposal_artifact_fingerprint=_sha("proposal-artifact-build-replay"),
+        source_proposal_revision=1,
+        generated_proposal_sha256=generated_sha,
+        final_docx_sha256=generated_sha,
+        finalization_policy_version="final-docx-finalization-policy-v1",
+        snapshot_schema_version=FINAL_SNAPSHOT_SCHEMA_VERSION,
+    )
+    snapshot = FinalDocxSnapshot(
+        owner_key=owner_key,
+        source_proposal_artifact_fingerprint=_sha("proposal-artifact-build-replay"),
+        source_proposal_revision=1,
+        generated_proposal_sha256=generated_sha,
+        final_docx_sha256=generated_sha,
+        edited_by_user=False,
+        finalization_policy_version="final-docx-finalization-policy-v1",
+        snapshot_schema_version=FINAL_SNAPSHOT_SCHEMA_VERSION,
+        final_snapshot_fingerprint=fingerprint,
+    )
+
+    replay_input = build_final_docx_snapshot_replay_input(snapshot)
+    assert replay_input.owner_key_fingerprint == owner_key.owner_key_fingerprint
+    assert replay_input.final_docx_sha256 == generated_sha
+    result = evaluate_final_docx_snapshot_freshness(replay_input, replay_input)
+    assert result.freshness_status == DocumentReplayFreshnessStatus.FRESH
 
 
 # -- lifecycle view -----------------------------------------------------------

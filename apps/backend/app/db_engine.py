@@ -29,6 +29,10 @@ from app.services.cv_document_models import FINAL_DOCX_SNAPSHOT_TABLE_NAMES, P6B
 from app.services.cv_document_final_snapshot_schema_manifest import (
     preflight_final_docx_snapshot_schema,
 )
+from app.services.candidate_identity_binding_schema_manifest import (
+    CANDIDATE_IDENTITY_BINDING_TABLE_NAME,
+    preflight_candidate_identity_binding_schema,
+)
 
 __all__ = [
     "Base",
@@ -39,7 +43,10 @@ __all__ = [
     "preflight_explicit_provenance_p2_schema",
     "preflight_explicit_provenance_p6b1_schema",
     "preflight_explicit_provenance_final_docx_snapshot_schema",
+    "preflight_explicit_provenance_candidate_identity_binding_schema",
 ]
+
+CANDIDATE_IDENTITY_BINDING_TABLE_NAMES = {CANDIDATE_IDENTITY_BINDING_TABLE_NAME}
 
 
 _P1_MANIFEST_VERSION = "explicit-provenance-p1-schema-manifest-v1"
@@ -609,6 +616,87 @@ def _validate_final_docx_snapshot_runtime_manifest(engine: Engine) -> None:
         raise RuntimeError(f"ERROR_INCOMPATIBLE_FINAL_DOCX_SNAPSHOT_SCHEMA:state={state}")
 
 
+# ---------------------------------------------------------------------------
+# Explicit Provenance Stage P6-B2A-I1 -- ``candidate_identity_bindings``.
+#
+# Adds exactly one managed table on top of the P1 (``truth_entities``) and
+# generic (``resumes``) foundations, both of which are guaranteed to already
+# exist by the time this block runs (strictly after the P1/P2/P6B1/final-
+# snapshot blocks above). Like the final-DOCX-snapshot addendum, this
+# table's "expected" schema is never derived from an ORM reference database
+# -- it is the wholly independent, hand-written manifest in
+# ``candidate_identity_binding_schema_manifest.py``, so a bug in the
+# ``CandidateIdentityBinding`` ORM model can never silently validate
+# itself. See docs/explicit-provenance-stage-p6b2a-i1-candidate-identity-binding.md.
+# ---------------------------------------------------------------------------
+
+
+def _install_candidate_identity_binding_triggers(engine: Engine) -> None:
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_candidate_identity_bindings_person_type
+            BEFORE INSERT ON candidate_identity_bindings
+            BEGIN
+                SELECT RAISE(ABORT, 'CANDIDATE_IDENTITY_BINDING_PERSON_ENTITY_INVALID')
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM truth_entities
+                    WHERE entity_id = NEW.person_entity_id
+                      AND entity_type = 'PERSON'
+                );
+            END
+            """
+        )
+        conn.exec_driver_sql(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_candidate_identity_bindings_resume_master
+            BEFORE INSERT ON candidate_identity_bindings
+            BEGIN
+                SELECT RAISE(ABORT, 'CANDIDATE_IDENTITY_BINDING_RESUME_NOT_MASTER')
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM resumes
+                    WHERE resume_id = NEW.master_resume_id
+                      AND is_master = 1
+                );
+            END
+            """
+        )
+        conn.exec_driver_sql(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_candidate_identity_bindings_immutable
+            BEFORE UPDATE ON candidate_identity_bindings
+            BEGIN
+                SELECT RAISE(ABORT, 'CANDIDATE_IDENTITY_BINDING_IMMUTABLE');
+            END
+            """
+        )
+        conn.exec_driver_sql(
+            """
+            CREATE TRIGGER IF NOT EXISTS trg_candidate_identity_bindings_no_delete
+            BEFORE DELETE ON candidate_identity_bindings
+            BEGIN
+                SELECT RAISE(ABORT, 'CANDIDATE_IDENTITY_BINDING_NO_DELETE');
+            END
+            """
+        )
+
+
+def preflight_explicit_provenance_candidate_identity_binding_schema(engine: Engine) -> str:
+    """Fully validate an existing ``candidate_identity_bindings`` table (and
+    its four triggers) against the independent, hand-written schema
+    manifest, without mutating or repairing the target. Must be called
+    read-only, before any DDL, alongside the P1/P2/P6B1/final-snapshot
+    preflights above."""
+
+    return preflight_candidate_identity_binding_schema(engine)
+
+
+def _validate_candidate_identity_binding_runtime_manifest(engine: Engine) -> None:
+    state = preflight_explicit_provenance_candidate_identity_binding_schema(engine)
+    if state != "CANDIDATE_IDENTITY_BINDING_SCHEMA_READY":
+        raise RuntimeError(f"ERROR_INCOMPATIBLE_CANDIDATE_IDENTITY_BINDING_SCHEMA:state={state}")
+
+
 def _apply_sqlite_pragmas(dbapi_connection: Any, _connection_record: Any) -> None:
     """Set per-connection SQLite PRAGMAs.
 
@@ -666,16 +754,20 @@ def init_models_sync(engine: Engine) -> None:
     p2_state = preflight_explicit_provenance_p2_schema(engine)
     p6b1_state = preflight_explicit_provenance_p6b1_schema(engine)
     final_docx_snapshot_state = preflight_explicit_provenance_final_docx_snapshot_schema(engine)
+    candidate_identity_binding_state = (
+        preflight_explicit_provenance_candidate_identity_binding_schema(engine)
+    )
 
-    # The P2, P6-B1, and final-snapshot-addendum tables are deliberately
-    # excluded from every generic/broad create_all path below; each is only
-    # ever created via its own controlled branch after all four preflights
-    # have passed.
+    # The P2, P6-B1, final-snapshot-addendum, and candidate-identity-binding
+    # tables are deliberately excluded from every generic/broad create_all
+    # path below; each is only ever created via its own controlled branch
+    # after every preflight above has passed.
     non_p2_tables = [
         table for table in Base.metadata.sorted_tables
         if table.name not in _P2_TABLE_COLUMNS
         and table.name not in _P6B1_TABLE_COLUMNS
         and table.name not in FINAL_DOCX_SNAPSHOT_TABLE_NAMES
+        and table.name not in CANDIDATE_IDENTITY_BINDING_TABLE_NAMES
     ]
 
     if p1_state == "ABSENT_CREATE_REQUIRED":
@@ -695,6 +787,7 @@ def init_models_sync(engine: Engine) -> None:
                 and table.name not in _P2_TABLE_COLUMNS
                 and table.name not in _P6B1_TABLE_COLUMNS
                 and table.name not in FINAL_DOCX_SNAPSHOT_TABLE_NAMES
+                and table.name not in CANDIDATE_IDENTITY_BINDING_TABLE_NAMES
             ):
                 table.create(engine, checkfirst=True)
     else:  # Defensive: preflight raises for every non-ready existing state.
@@ -740,6 +833,26 @@ def init_models_sync(engine: Engine) -> None:
     else:  # Defensive: preflight raises for every non-ready existing state.
         raise RuntimeError(
             f"ERROR_INCOMPATIBLE_FINAL_DOCX_SNAPSHOT_SCHEMA:state={final_docx_snapshot_state}"
+        )
+
+    if candidate_identity_binding_state == "ABSENT_CREATE_REQUIRED":
+        # candidate_identity_bindings FKs into truth_entities (P1) and
+        # resumes (generic), both guaranteed to already exist by this
+        # point -- this block always runs strictly after the P1/P2/P6B1/
+        # final-snapshot blocks above, never before.
+        for table in Base.metadata.sorted_tables:
+            if table.name in CANDIDATE_IDENTITY_BINDING_TABLE_NAMES:
+                table.create(engine, checkfirst=True)
+        _install_candidate_identity_binding_triggers(engine)
+        _validate_candidate_identity_binding_runtime_manifest(engine)
+    elif candidate_identity_binding_state == "CANDIDATE_IDENTITY_BINDING_SCHEMA_READY":
+        # Deliberately read-only for an existing candidate-identity-binding
+        # table, same contract as P1/P2/P6-B1/final-snapshot.
+        _validate_candidate_identity_binding_runtime_manifest(engine)
+    else:  # Defensive: preflight raises for every non-ready existing state.
+        raise RuntimeError(
+            "ERROR_INCOMPATIBLE_CANDIDATE_IDENTITY_BINDING_SCHEMA:"
+            f"state={candidate_identity_binding_state}"
         )
 
     # ``create_all`` does not ALTER existing SQLite tables. Keep this additive

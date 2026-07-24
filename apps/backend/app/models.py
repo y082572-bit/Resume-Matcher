@@ -662,6 +662,50 @@ class TruthLegacyMigrationMap(Base):
     )
 
 
+class CandidateIdentityBinding(Base):
+    """Explicit Provenance Stage P6-B2A-I1: the immutable, auditable binding
+    of exactly one PERSON ``TruthEntity`` to exactly one master ``Resume``.
+
+    Carries no personal data of its own -- only the two identities, a
+    content-derived ``binding_fingerprint``, and audit-only ``created_at``.
+    Never updated, superseded, replaced, or deleted: four
+    ``trg_candidate_identity_bindings_*`` triggers (installed in
+    ``app/db_engine.py``, never here) gate INSERT on PERSON/master-resume
+    validity and unconditionally block every UPDATE/DELETE at the SQLite
+    layer. Write authority belongs exclusively to
+    ``candidate_identity_binding_sql_repository.CandidateIdentityBindingSqlService.create_binding``.
+    """
+
+    __tablename__ = "candidate_identity_bindings"
+
+    binding_fingerprint: Mapped[str] = mapped_column(String(64), primary_key=True)
+    person_entity_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("truth_entities.entity_id", ondelete="RESTRICT"), nullable=False
+    )
+    master_resume_id: Mapped[str] = mapped_column(
+        String, ForeignKey("resumes.resume_id", ondelete="RESTRICT"), nullable=False
+    )
+    binding_schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False, default=_utcnow_iso)
+
+    __table_args__ = (
+        UniqueConstraint("person_entity_id", name="uq_candidate_identity_bindings_person"),
+        UniqueConstraint("master_resume_id", name="uq_candidate_identity_bindings_resume"),
+        CheckConstraint(
+            _SHA256_CHECK.format(name="binding_fingerprint"),
+            name="ck_candidate_identity_bindings_fingerprint",
+        ),
+        CheckConstraint(
+            _UUID_CHECK.format(name="person_entity_id"),
+            name="ck_candidate_identity_bindings_person_uuid",
+        ),
+        CheckConstraint(
+            "binding_schema_version = 'candidate-identity-binding-schema-v1'",
+            name="ck_candidate_identity_bindings_schema_version",
+        ),
+    )
+
+
 class ApiKey(Base):
     """An encrypted LLM provider API key.
 

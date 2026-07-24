@@ -521,6 +521,105 @@ def test_standard_mode_never_mutates_db_or_filesystem(env) -> None:
     assert before_tree == after_tree
 
 
+# -- Explicit Provenance Stage P6-B1 SQL storage addendum: the global
+# orphan-blob authority must recognize a final snapshot as a legitimate
+# blob reference too, and a real orphan must still be reported exactly
+# once (not once per table it's absent from). ------------------------------
+
+
+def _make_final_snapshot(owner_key, proposal, final_bytes: bytes):
+    from app.schemas.cv_document_final_snapshot import FinalDocxSnapshot, FINAL_SNAPSHOT_SCHEMA_VERSION
+    from app.services.cv_document_final_snapshot_repository import compute_final_snapshot_fingerprint
+
+    final_hash = _sha256(final_bytes)
+    fp = compute_final_snapshot_fingerprint(
+        owner_key_fingerprint=owner_key.owner_key_fingerprint,
+        source_proposal_artifact_fingerprint=proposal.artifact_fingerprint,
+        source_proposal_revision=proposal.proposal_revision,
+        generated_proposal_sha256=proposal.generated_docx_content_hash,
+        final_docx_sha256=final_hash,
+        finalization_policy_version="final-policy-v1",
+        snapshot_schema_version=FINAL_SNAPSHOT_SCHEMA_VERSION,
+    )
+    return FinalDocxSnapshot(
+        owner_key=owner_key,
+        source_proposal_artifact_fingerprint=proposal.artifact_fingerprint,
+        source_proposal_revision=proposal.proposal_revision,
+        generated_proposal_sha256=proposal.generated_docx_content_hash,
+        final_docx_sha256=final_hash,
+        edited_by_user=proposal.generated_docx_content_hash != final_hash,
+        finalization_policy_version="final-policy-v1",
+        snapshot_schema_version=FINAL_SNAPSHOT_SCHEMA_VERSION,
+        final_snapshot_fingerprint=fp,
+    )
+
+
+def test_blob_referenced_only_by_a_final_snapshot_is_not_orphan(env) -> None:
+    from app.services.cv_document_final_snapshot_sql_repository import FinalDocxSnapshotSqlRepository
+
+    repo, session_factory, store, _ = env
+    final_repo = FinalDocxSnapshotSqlRepository(session_factory, store)
+    owner_key = _owner_key()
+    proposal = _make_proposal(owner_key, 1, b"final-snapshot-only proposal base")
+    repo.replace_current_proposal(owner_key, proposal, b"final-snapshot-only proposal base", None)
+
+    # These exact final bytes are never used as a proposal/snapshot/pdf
+    # blob anywhere -- the only row referencing this content hash is the
+    # final snapshot metadata row.
+    final_bytes = b"bytes referenced only by a final snapshot, nothing else"
+    final_snapshot = _make_final_snapshot(owner_key, proposal, final_bytes)
+    result = final_repo.save_final_docx_snapshot(final_snapshot, final_bytes)
+    assert result.status.value == "SAVED"
+
+    report = run_reconciliation(session_factory, store)
+    assert CvDocumentReconciliationIssueCode.ORPHAN_BLOB_ROW not in _issue_codes(report)
+    assert CvDocumentReconciliationIssueCode.ORPHAN_FILESYSTEM_BLOB not in _issue_codes(report)
+
+
+def test_blob_referenced_only_by_a_proposal_is_not_orphan(env) -> None:
+    repo, session_factory, store, _ = env
+    owner_key = _owner_key()
+    proposal = _make_proposal(owner_key, 1, b"proposal-only blob content")
+    repo.replace_current_proposal(owner_key, proposal, b"proposal-only blob content", None)
+
+    report = run_reconciliation(session_factory, store)
+    assert CvDocumentReconciliationIssueCode.ORPHAN_BLOB_ROW not in _issue_codes(report)
+    assert CvDocumentReconciliationIssueCode.ORPHAN_FILESYSTEM_BLOB not in _issue_codes(report)
+
+
+def test_blob_referenced_only_by_a_pdf_is_not_orphan(env) -> None:
+    repo, session_factory, store, _ = env
+    owner_key = _owner_key()
+    proposal = _make_proposal(owner_key, 1, b"pdf-only base content")
+    repo.replace_current_proposal(owner_key, proposal, b"pdf-only base content", None)
+    snapshot = _make_snapshot(owner_key, proposal, b"pdf-only base content")
+    repo.save_validated_snapshot(snapshot, b"pdf-only base content")
+    pdf = _make_pdf(owner_key, snapshot, 1, b"%PDF-only-content")
+    repo.replace_current_pdf(owner_key, pdf, b"%PDF-only-content", None)
+
+    report = run_reconciliation(session_factory, store)
+    assert CvDocumentReconciliationIssueCode.ORPHAN_BLOB_ROW not in _issue_codes(report)
+    assert CvDocumentReconciliationIssueCode.ORPHAN_FILESYSTEM_BLOB not in _issue_codes(report)
+
+
+def test_a_real_orphan_is_reported_exactly_once(env) -> None:
+    repo, session_factory, store, _ = env
+    owner_key = _owner_key()
+    proposal = _make_proposal(owner_key, 1, b"unrelated real content")
+    repo.replace_current_proposal(owner_key, proposal, b"unrelated real content", None)
+
+    store.write_blob(b"a genuinely unreferenced orphan blob")
+
+    report = run_reconciliation(session_factory, store)
+    matching = [
+        issue
+        for issue in report.issues
+        if issue.issue_code
+        in (CvDocumentReconciliationIssueCode.ORPHAN_BLOB_ROW, CvDocumentReconciliationIssueCode.ORPHAN_FILESYSTEM_BLOB)
+    ]
+    assert len(matching) == 1
+
+
 def test_cleanup_stale_temp_files_is_a_separate_explicit_operation(env) -> None:
     _, session_factory, store, _ = env
     (store.tmp_dir / "blob-explicit-cleanup.tmp").write_bytes(b"stale")

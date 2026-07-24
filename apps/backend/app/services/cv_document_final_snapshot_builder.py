@@ -53,6 +53,27 @@ _READ_FAILURE_TO_BUILD_STATUS: dict[WorkingCopyReadStatus, FinalDocxSnapshotBuil
     ),
 }
 
+# Explicit Provenance Stage P6-B1 SQL storage addendum: additive 1:1
+# mapping from a real SQL-backed FinalDocxSnapshotRepository's closed save
+# statuses onto their corresponding build statuses. This dict is the only
+# addition needed here -- the builder still maps exclusively on
+# FinalSnapshotSaveStatus (the Protocol's own closed result type), never on
+# a SQLAlchemy/CvDocumentStorageError exception, which it never imports.
+_SAVE_STATUS_TO_BUILD_STATUS: dict[FinalSnapshotSaveStatus, FinalDocxSnapshotBuildStatus] = {
+    FinalSnapshotSaveStatus.SOURCE_PROPOSAL_NOT_FOUND: FinalDocxSnapshotBuildStatus.SOURCE_PROPOSAL_NOT_FOUND,
+    FinalSnapshotSaveStatus.SOURCE_PROPOSAL_OWNER_MISMATCH: (
+        FinalDocxSnapshotBuildStatus.SOURCE_PROPOSAL_OWNER_MISMATCH
+    ),
+    FinalSnapshotSaveStatus.SOURCE_PROPOSAL_REVISION_MISMATCH: (
+        FinalDocxSnapshotBuildStatus.SOURCE_PROPOSAL_REVISION_MISMATCH
+    ),
+    FinalSnapshotSaveStatus.SOURCE_PROPOSAL_HASH_MISMATCH: (
+        FinalDocxSnapshotBuildStatus.SOURCE_PROPOSAL_HASH_MISMATCH
+    ),
+    FinalSnapshotSaveStatus.STORAGE_METADATA_CONFLICT: FinalDocxSnapshotBuildStatus.STORAGE_METADATA_CONFLICT,
+    FinalSnapshotSaveStatus.STORAGE_UNAVAILABLE: FinalDocxSnapshotBuildStatus.STORAGE_UNAVAILABLE,
+}
+
 
 def finalize_current_docx_for_pdf(
     *,
@@ -142,6 +163,11 @@ def finalize_current_docx_for_pdf(
             diagnostics=(
                 "repository recomputed a different final_snapshot_fingerprint than the builder",
             ),
+        )
+    if save_result.status in _SAVE_STATUS_TO_BUILD_STATUS:
+        return FinalDocxSnapshotBuildResult(
+            status=_SAVE_STATUS_TO_BUILD_STATUS[save_result.status],
+            diagnostics=(f"repository save failed: {save_result.status.value}",),
         )
     if save_result.status not in (
         FinalSnapshotSaveStatus.SAVED,

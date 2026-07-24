@@ -20,9 +20,15 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from app.models import Base, MetricEvent
 
 # Explicit import registers the P6-B1 document-storage-foundation ORM
-# models on ``Base.metadata`` before any ``create_all``/preflight below --
-# see the P6-B1 section further down and docs/explicit-provenance-stage-p6b1.md.
-from app.services.cv_document_models import P6B1_TABLE_NAMES
+# models (base P6-B1 plus this SQL storage addendum's
+# ``cv_docx_final_snapshots``) on ``Base.metadata`` before any
+# ``create_all``/preflight below -- see the P6-B1 section further down and
+# docs/explicit-provenance-stage-p6b1.md /
+# docs/explicit-provenance-stage-p6b1-final-docx-snapshot-storage-addendum.md.
+from app.services.cv_document_models import FINAL_DOCX_SNAPSHOT_TABLE_NAMES, P6B1_TABLE_NAMES
+from app.services.cv_document_final_snapshot_schema_manifest import (
+    preflight_final_docx_snapshot_schema,
+)
 
 __all__ = [
     "Base",
@@ -32,6 +38,7 @@ __all__ = [
     "preflight_explicit_provenance_p1_schema",
     "preflight_explicit_provenance_p2_schema",
     "preflight_explicit_provenance_p6b1_schema",
+    "preflight_explicit_provenance_final_docx_snapshot_schema",
 ]
 
 
@@ -572,6 +579,36 @@ def explicit_provenance_p6b1_schema_manifest(engine: Engine) -> dict[str, Any]:
         return _collect_p6b1_schema_manifest(conn)
 
 
+# ---------------------------------------------------------------------------
+# Explicit Provenance P6-B1 SQL storage addendum -- ``cv_docx_final_snapshots``.
+#
+# Adds exactly one managed table on top of the P6-B1 foundation (it FKs into
+# three of the seven base P6-B1 tables, so its own preflight/create step
+# always runs strictly after the P6-B1 block below). Unlike every preflight
+# above, this one's "expected" schema is never derived from an ORM reference
+# database (``Base.metadata.create_all`` on an in-memory engine) -- it is the
+# wholly independent, hand-written manifest in
+# ``cv_document_final_snapshot_schema_manifest.py``, so a bug in the ORM
+# model can never silently validate itself. See
+# docs/explicit-provenance-stage-p6b1-final-docx-snapshot-storage-addendum.md.
+# ---------------------------------------------------------------------------
+
+
+def preflight_explicit_provenance_final_docx_snapshot_schema(engine: Engine) -> str:
+    """Fully validate an existing ``cv_docx_final_snapshots`` table against
+    the independent, hand-written schema manifest, without mutating or
+    repairing the target. Must be called read-only, before any DDL,
+    alongside the P1/P2/P6B1 preflights above."""
+
+    return preflight_final_docx_snapshot_schema(engine)
+
+
+def _validate_final_docx_snapshot_runtime_manifest(engine: Engine) -> None:
+    state = preflight_explicit_provenance_final_docx_snapshot_schema(engine)
+    if state != "FINAL_DOCX_SNAPSHOT_SCHEMA_READY":
+        raise RuntimeError(f"ERROR_INCOMPATIBLE_FINAL_DOCX_SNAPSHOT_SCHEMA:state={state}")
+
+
 def _apply_sqlite_pragmas(dbapi_connection: Any, _connection_record: Any) -> None:
     """Set per-connection SQLite PRAGMAs.
 
@@ -617,22 +654,28 @@ def init_models_sync(engine: Engine) -> None:
     """Create all tables (idempotent) using a sync engine connection.
 
     Preflight ordering is a hard contract (docs/explicit-provenance-stage-p2.md,
-    docs/explicit-provenance-stage-p6b1.md): the P1, P2, **and P6-B1** schema
+    docs/explicit-provenance-stage-p6b1.md,
+    docs/explicit-provenance-stage-p6b1-final-docx-snapshot-storage-addendum.md):
+    the P1, P2, P6-B1, **and the final-DOCX-snapshot addendum** schema
     preflights all run — read-only — *before* any DDL executes. Any one of
     them raising aborts the whole call before a single mutation, so an
-    incompatible P2 or P6-B1 table can never let P1 (or each other) get
-    created/mutated.
+    incompatible P2, P6-B1, or final-snapshot-addendum table can never let
+    P1 (or each other) get created/mutated.
     """
     p1_state = preflight_explicit_provenance_p1_schema(engine)
     p2_state = preflight_explicit_provenance_p2_schema(engine)
     p6b1_state = preflight_explicit_provenance_p6b1_schema(engine)
+    final_docx_snapshot_state = preflight_explicit_provenance_final_docx_snapshot_schema(engine)
 
-    # The P2 and P6-B1 tables are deliberately excluded from every
-    # generic/broad create_all path below; each is only ever created via its
-    # own controlled branch after all three preflights have passed.
+    # The P2, P6-B1, and final-snapshot-addendum tables are deliberately
+    # excluded from every generic/broad create_all path below; each is only
+    # ever created via its own controlled branch after all four preflights
+    # have passed.
     non_p2_tables = [
         table for table in Base.metadata.sorted_tables
-        if table.name not in _P2_TABLE_COLUMNS and table.name not in _P6B1_TABLE_COLUMNS
+        if table.name not in _P2_TABLE_COLUMNS
+        and table.name not in _P6B1_TABLE_COLUMNS
+        and table.name not in FINAL_DOCX_SNAPSHOT_TABLE_NAMES
     ]
 
     if p1_state == "ABSENT_CREATE_REQUIRED":
@@ -644,13 +687,14 @@ def init_models_sync(engine: Engine) -> None:
         # EXISTS repair, trigger installation, or P1 sqlite_master mutation.
         _validate_p1_runtime_manifest(engine)
         # Preserve the pre-existing additive migration contract for legacy
-        # tables without ever invoking create_all or create on a P1, P2, or
-        # P6-B1 table.
+        # tables without ever invoking create_all or create on a P1, P2,
+        # P6-B1, or final-snapshot-addendum table.
         for table in Base.metadata.sorted_tables:
             if (
                 table.name not in _P1_TABLE_COLUMNS
                 and table.name not in _P2_TABLE_COLUMNS
                 and table.name not in _P6B1_TABLE_COLUMNS
+                and table.name not in FINAL_DOCX_SNAPSHOT_TABLE_NAMES
             ):
                 table.create(engine, checkfirst=True)
     else:  # Defensive: preflight raises for every non-ready existing state.
@@ -679,6 +723,24 @@ def init_models_sync(engine: Engine) -> None:
         _validate_p6b1_runtime_manifest(engine)
     else:  # Defensive: preflight raises for every non-ready existing state.
         raise RuntimeError(f"ERROR_INCOMPATIBLE_P6B1_SCHEMA:state={p6b1_state}")
+
+    if final_docx_snapshot_state == "ABSENT_CREATE_REQUIRED":
+        # cv_docx_final_snapshots FKs into three base P6-B1 tables, which by
+        # this point are guaranteed to already exist (either just created
+        # above, or already P6B1_SCHEMA_READY) -- this block always runs
+        # strictly after the P6-B1 block, never before.
+        for table in Base.metadata.sorted_tables:
+            if table.name in FINAL_DOCX_SNAPSHOT_TABLE_NAMES:
+                table.create(engine, checkfirst=True)
+        _validate_final_docx_snapshot_runtime_manifest(engine)
+    elif final_docx_snapshot_state == "FINAL_DOCX_SNAPSHOT_SCHEMA_READY":
+        # Deliberately read-only for an existing addendum table, same
+        # contract as P1/P2/P6-B1.
+        _validate_final_docx_snapshot_runtime_manifest(engine)
+    else:  # Defensive: preflight raises for every non-ready existing state.
+        raise RuntimeError(
+            f"ERROR_INCOMPATIBLE_FINAL_DOCX_SNAPSHOT_SCHEMA:state={final_docx_snapshot_state}"
+        )
 
     # ``create_all`` does not ALTER existing SQLite tables. Keep this additive
     # migration idempotent so older local databases can load resumes safely.

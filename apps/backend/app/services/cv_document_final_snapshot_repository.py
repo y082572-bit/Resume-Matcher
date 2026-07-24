@@ -69,6 +69,18 @@ class FinalSnapshotSaveStatus(StrEnum):
     DOCX_HASH_MISMATCH = "DOCX_HASH_MISMATCH"
     SNAPSHOT_METADATA_CONFLICT = "SNAPSHOT_METADATA_CONFLICT"
     DOCX_BYTES_CONFLICT = "DOCX_BYTES_CONFLICT"
+    # Explicit Provenance Stage P6-B1 SQL storage addendum: additive --
+    # only ever returned by a real SQL-backed FinalDocxSnapshotRepository
+    # (never by InMemoryFinalDocxSnapshotRepository above), and always in
+    # place of the generic SNAPSHOT_METADATA_CONFLICT whenever the failure
+    # cause is specifically the source proposal lineage or the shared SQL/
+    # blob storage layer, never a bare CvDocumentStorageError/SQLAlchemyError.
+    SOURCE_PROPOSAL_NOT_FOUND = "SOURCE_PROPOSAL_NOT_FOUND"
+    SOURCE_PROPOSAL_OWNER_MISMATCH = "SOURCE_PROPOSAL_OWNER_MISMATCH"
+    SOURCE_PROPOSAL_REVISION_MISMATCH = "SOURCE_PROPOSAL_REVISION_MISMATCH"
+    SOURCE_PROPOSAL_HASH_MISMATCH = "SOURCE_PROPOSAL_HASH_MISMATCH"
+    STORAGE_METADATA_CONFLICT = "STORAGE_METADATA_CONFLICT"
+    STORAGE_UNAVAILABLE = "STORAGE_UNAVAILABLE"
 
 
 class FinalSnapshotSaveResult(BaseModel):

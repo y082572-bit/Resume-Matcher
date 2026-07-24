@@ -46,7 +46,6 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.schemas.cv_document_artifact import (
-    ArtifactOwnerKind,
     ConfirmedCvPdfArtifact,
     CvDocxProposalArtifact,
     DocumentProvenanceMode,
@@ -60,19 +59,22 @@ from app.schemas.cv_document_storage import (
     CvDocumentStorageErrorCode,
     CvDocumentStorageOperationResult,
     DocumentArtifactStorageStatus,
-    DocumentBlobStorageStatus,
 )
 from app.services.cv_document_blob_store import CvDocumentBlobStore, CvDocumentStorageError
 from app.services.cv_document_models import (
     CvConfirmedPdfArtifactRow,
     CvDocumentArtifactOwner,
-    CvDocumentBlob,
     CvDocumentPdfSlot,
     CvDocumentProposalSlot,
     CvDocxProposalArtifactRow,
     CvDocxValidatedSnapshotRow,
 )
-from app.services.cv_document_owner_identity import compute_owner_key_fingerprint
+from app.services.cv_document_storage_shared import (
+    ensure_blob_row as _shared_ensure_blob_row,
+    ensure_owner as _shared_ensure_owner,
+    require_owner_key as _shared_require_owner_key,
+    row_to_owner_key as _shared_row_to_owner_key,
+)
 from app.services.cv_document_pdf_confirmation_builder import compute_pdf_artifact_fingerprint
 from app.services.cv_document_proposal_builder import compute_proposal_artifact_fingerprint
 from app.services.cv_document_repository_protocol import (
@@ -119,88 +121,28 @@ class CvDocumentArtifactSqlRepository:
 
     # -- owner upsert (section K) --------------------------------------------
 
+    # Explicit Provenance Stage P6-B1 SQL storage addendum (H1): the actual
+    # logic now lives in ``cv_document_storage_shared.py``, shared verbatim
+    # with ``FinalDocxSnapshotSqlRepository`` -- these remain thin delegating
+    # wrappers (same names, same signatures, same semantics) purely so
+    # existing monkeypatch-based tests (e.g. patching ``repo._ensure_owner``)
+    # keep working unmodified.
+
     def _ensure_owner(self, session: Session, owner_key: JobArtifactOwnerKey) -> None:
-        recomputed = compute_owner_key_fingerprint(
-            person_entity_id=owner_key.person_entity_id,
-            owner_kind=owner_key.owner_kind,
-            owner_reference_id=owner_key.owner_reference_id,
-            owner_key_schema_version=owner_key.owner_key_schema_version,
-        )
-        if recomputed != owner_key.owner_key_fingerprint:
-            raise CvDocumentStorageError.of(
-                CvDocumentStorageErrorCode.OWNER_IDENTITY_MISMATCH,
-                "owner_key.owner_key_fingerprint does not match a recomputed fingerprint",
-            )
-
-        existing = session.get(CvDocumentArtifactOwner, recomputed)
-        if existing is None:
-            session.add(
-                CvDocumentArtifactOwner(
-                    owner_key_fingerprint=recomputed,
-                    person_entity_id=str(owner_key.person_entity_id),
-                    owner_kind=owner_key.owner_kind.value,
-                    owner_reference_id=owner_key.owner_reference_id,
-                    owner_key_schema_version=owner_key.owner_key_schema_version,
-                )
-            )
-            session.flush()
-            return
-
-        if (
-            existing.person_entity_id != str(owner_key.person_entity_id)
-            or existing.owner_kind != owner_key.owner_kind.value
-            or existing.owner_reference_id != owner_key.owner_reference_id
-            or existing.owner_key_schema_version != owner_key.owner_key_schema_version
-        ):
-            raise CvDocumentStorageError.of(
-                CvDocumentStorageErrorCode.OWNER_IDENTITY_MISMATCH,
-                "an existing owner row with this fingerprint has different constituent fields",
-            )
+        _shared_ensure_owner(session, owner_key)
 
     def _row_to_owner_key(self, owner_row: CvDocumentArtifactOwner) -> JobArtifactOwnerKey:
-        return JobArtifactOwnerKey(
-            person_entity_id=UUID(owner_row.person_entity_id),
-            owner_kind=ArtifactOwnerKind(owner_row.owner_kind),
-            owner_reference_id=owner_row.owner_reference_id,
-            owner_key_schema_version=owner_row.owner_key_schema_version,
-            owner_key_fingerprint=owner_row.owner_key_fingerprint,
-        )
+        return _shared_row_to_owner_key(owner_row)
 
     def _require_owner_key(self, session: Session, owner_key_fingerprint: str) -> JobArtifactOwnerKey:
-        owner_row = session.get(CvDocumentArtifactOwner, owner_key_fingerprint)
-        if owner_row is None:
-            raise CvDocumentStorageError.of(
-                CvDocumentStorageErrorCode.OWNER_NOT_FOUND,
-                f"no owner row for owner_key_fingerprint={owner_key_fingerprint}",
-            )
-        return self._row_to_owner_key(owner_row)
+        return _shared_require_owner_key(session, owner_key_fingerprint)
 
     # -- blob metadata row (ensure, never overwrite) -------------------------
 
     def _ensure_blob_row(self, session: Session, *, blob_sha256: str, byte_size: int, media_type: str) -> None:
-        locator = self._blob_store.locator_for(blob_sha256)
-        existing = session.get(CvDocumentBlob, blob_sha256)
-        if existing is None:
-            session.add(
-                CvDocumentBlob(
-                    blob_sha256=blob_sha256,
-                    byte_size=byte_size,
-                    media_type=media_type,
-                    storage_locator=locator,
-                    storage_status=DocumentBlobStorageStatus.OK.value,
-                )
-            )
-            session.flush()
-            return
-        if (
-            existing.byte_size != byte_size
-            or existing.storage_locator != locator
-            or existing.media_type != media_type
-        ):
-            raise CvDocumentStorageError.of(
-                CvDocumentStorageErrorCode.STORAGE_METADATA_CONFLICT,
-                "existing cv_document_blobs row does not match the freshly written blob's size/locator/media_type",
-            )
+        _shared_ensure_blob_row(
+            session, self._blob_store, blob_sha256=blob_sha256, byte_size=byte_size, media_type=media_type
+        )
 
     # -- domain reconstruction -----------------------------------------------
 

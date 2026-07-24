@@ -439,6 +439,112 @@ def test_finalization_does_not_use_cv_document_artifact_repository() -> None:
     assert not any("CvDocumentArtifactRepository" in line for line in imports)
 
 
+class _FixedStatusSnapshotRepository:
+    """A minimal fake repository that always returns a fixed
+    ``FinalSnapshotSaveStatus`` from ``save_final_docx_snapshot`` --
+    standing in for a real SQL-backed ``FinalDocxSnapshotSqlRepository``
+    that returned that specific closed status, without pulling in any real
+    SQL/storage machinery."""
+
+    def __init__(self, status: FinalSnapshotSaveStatus) -> None:
+        self._status = status
+
+    def save_final_docx_snapshot(self, snapshot, docx_bytes):
+        from app.services.cv_document_final_snapshot_repository import FinalSnapshotSaveResult
+
+        return FinalSnapshotSaveResult(status=self._status)
+
+    def get_final_docx_snapshot(self, final_snapshot_fingerprint):
+        return None
+
+    def retrieve_final_docx_bytes(self, final_docx_sha256):
+        return None
+
+
+# Explicit Provenance Stage P6-B1 SQL storage addendum: the 6 new
+# FinalSnapshotSaveStatus values (only ever returned by a real SQL-backed
+# repository) must each map to their corresponding, equally new
+# FinalDocxSnapshotBuildStatus -- never collapse onto the generic
+# FINAL_SNAPSHOT_PERSISTENCE_FAILED.
+_NEW_SAVE_STATUS_TO_BUILD_STATUS = [
+    (FinalSnapshotSaveStatus.SOURCE_PROPOSAL_NOT_FOUND, FinalDocxSnapshotBuildStatus.SOURCE_PROPOSAL_NOT_FOUND),
+    (
+        FinalSnapshotSaveStatus.SOURCE_PROPOSAL_OWNER_MISMATCH,
+        FinalDocxSnapshotBuildStatus.SOURCE_PROPOSAL_OWNER_MISMATCH,
+    ),
+    (
+        FinalSnapshotSaveStatus.SOURCE_PROPOSAL_REVISION_MISMATCH,
+        FinalDocxSnapshotBuildStatus.SOURCE_PROPOSAL_REVISION_MISMATCH,
+    ),
+    (
+        FinalSnapshotSaveStatus.SOURCE_PROPOSAL_HASH_MISMATCH,
+        FinalDocxSnapshotBuildStatus.SOURCE_PROPOSAL_HASH_MISMATCH,
+    ),
+    (FinalSnapshotSaveStatus.STORAGE_METADATA_CONFLICT, FinalDocxSnapshotBuildStatus.STORAGE_METADATA_CONFLICT),
+    (FinalSnapshotSaveStatus.STORAGE_UNAVAILABLE, FinalDocxSnapshotBuildStatus.STORAGE_UNAVAILABLE),
+]
+
+
+@pytest.mark.parametrize("save_status,expected_build_status", _NEW_SAVE_STATUS_TO_BUILD_STATUS)
+def test_new_save_statuses_map_to_corresponding_build_statuses(save_status, expected_build_status) -> None:
+    owner_key, proposal_fingerprint, proposal_revision, reader, _ = _default_flow(owner_key=_owner_key())
+    repository = _FixedStatusSnapshotRepository(save_status)
+
+    result = finalize_current_docx_for_pdf(
+        owner_key=owner_key,
+        expected_proposal_artifact_fingerprint=proposal_fingerprint,
+        expected_proposal_revision=proposal_revision,
+        source_reader=reader,
+        snapshot_repository=repository,
+        finalization_policy_version=FINALIZATION_POLICY_VERSION,
+    )
+    assert result.status == expected_build_status
+    assert result.snapshot is None
+
+
+def test_all_new_save_statuses_are_covered_by_the_mapping() -> None:
+    """Every member of the 6 new statuses must appear in the parametrized
+    mapping above -- catches a future addition to the enum that forgets to
+    also add builder coverage."""
+
+    covered = {save_status for save_status, _ in _NEW_SAVE_STATUS_TO_BUILD_STATUS}
+    expected = {
+        FinalSnapshotSaveStatus.SOURCE_PROPOSAL_NOT_FOUND,
+        FinalSnapshotSaveStatus.SOURCE_PROPOSAL_OWNER_MISMATCH,
+        FinalSnapshotSaveStatus.SOURCE_PROPOSAL_REVISION_MISMATCH,
+        FinalSnapshotSaveStatus.SOURCE_PROPOSAL_HASH_MISMATCH,
+        FinalSnapshotSaveStatus.STORAGE_METADATA_CONFLICT,
+        FinalSnapshotSaveStatus.STORAGE_UNAVAILABLE,
+    }
+    assert covered == expected
+
+
+def test_builder_never_imports_sqlalchemy() -> None:
+    imports = _import_lines(builder_module)
+    assert not any("sqlalchemy" in line.lower() for line in imports)
+
+
+def test_builder_never_imports_cv_document_storage_error() -> None:
+    imports = _import_lines(builder_module)
+    assert not any("CvDocumentStorageError" in line for line in imports)
+    assert not any("cv_document_blob_store" in line for line in imports)
+    assert not any("cv_document_sql_repository" in line for line in imports)
+    assert not any("cv_document_final_snapshot_sql_repository" in line for line in imports)
+
+
+def test_builder_has_no_infrastructural_try_except() -> None:
+    """AST-level check: the builder module must contain no ``try``/
+    ``except`` block at all -- every branch is a plain status comparison
+    against the closed ``FinalSnapshotSaveStatus`` Protocol result, never a
+    caught infrastructure exception."""
+
+    import ast
+
+    tree = ast.parse(inspect.getsource(builder_module))
+    for node in ast.walk(tree):
+        assert not isinstance(node, ast.Try), "builder module must contain no try/except"
+
+
 def test_finalization_does_not_touch_existing_proposal_repository() -> None:
     """Running the new addendum flow against a fresh
     ``InMemoryFinalDocxSnapshotRepository`` must leave a completely

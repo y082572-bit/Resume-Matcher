@@ -503,3 +503,89 @@ P6B1_TABLE_NAMES: frozenset[str] = frozenset(
         CvDocumentPdfSlot.__tablename__,
     }
 )
+
+
+class CvDocxFinalSnapshotRow(Base):
+    """One immutable Final DOCX snapshot metadata row (Explicit Provenance
+    P6-B1 SQL storage addendum for ``FinalDocxSnapshotRepository``).
+
+    Deliberately a wholly separate table from ``cv_docx_validated_snapshots``
+    -- it backs ``FinalDocxSnapshotRepository``, an independent, additive
+    Protocol that never reuses or extends ``CvDocumentArtifactRepository``
+    (see ``cv_document_final_snapshot_repository.py``). ``final_docx_sha256``
+    always FK's into the shared ``cv_document_blobs`` store, but deliberately
+    carries no ``UNIQUE`` constraint of its own and no separate
+    ``blob_sha256`` column: many snapshot metadata rows (distinct owner/
+    proposal lineage) may legitimately point at byte-identical final DOCX
+    content, and identity for FK purposes is always ``final_docx_sha256``
+    itself.
+    """
+
+    __tablename__ = "cv_docx_final_snapshots"
+
+    final_snapshot_fingerprint: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_key_fingerprint: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("cv_document_artifact_owners.owner_key_fingerprint", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    source_proposal_artifact_fingerprint: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("cv_docx_proposal_artifacts.artifact_fingerprint", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    source_proposal_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    generated_proposal_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    final_docx_sha256: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("cv_document_blobs.blob_sha256", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    edited_by_user: Mapped[int] = mapped_column(Integer, nullable=False)
+    finalization_policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    snapshot_schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False, default=_utcnow_iso)
+
+    __table_args__ = (
+        CheckConstraint(
+            _SHA256_CHECK.format(name="final_snapshot_fingerprint"),
+            name="ck_cv_docx_final_snapshot_fingerprint",
+        ),
+        CheckConstraint(
+            _SHA256_CHECK.format(name="generated_proposal_sha256"),
+            name="ck_cv_docx_final_snapshot_generated_proposal_sha256",
+        ),
+        CheckConstraint(
+            _SHA256_CHECK.format(name="final_docx_sha256"),
+            name="ck_cv_docx_final_snapshot_final_docx_sha256",
+        ),
+        CheckConstraint(
+            "source_proposal_revision >= 1", name="ck_cv_docx_final_snapshot_revision"
+        ),
+        CheckConstraint(
+            "snapshot_schema_version = 'cv-document-final-snapshot-schema-v1'",
+            name="ck_cv_docx_final_snapshot_schema_version",
+        ),
+        CheckConstraint(
+            "trim(finalization_policy_version) != ''",
+            name="ck_cv_docx_final_snapshot_policy_version_not_blank",
+        ),
+        CheckConstraint(
+            "length(finalization_policy_version) <= 64",
+            name="ck_cv_docx_final_snapshot_policy_version_length",
+        ),
+        CheckConstraint(
+            "edited_by_user IN (0, 1)", name="ck_cv_docx_final_snapshot_edited_by_user_bool"
+        ),
+        CheckConstraint(
+            "(edited_by_user = 1 AND generated_proposal_sha256 != final_docx_sha256) OR "
+            "(edited_by_user = 0 AND generated_proposal_sha256 = final_docx_sha256)",
+            name="ck_cv_docx_final_snapshot_edited_by_user_consistency",
+        ),
+        Index("ix_cv_docx_final_snapshot_owner", "owner_key_fingerprint"),
+        Index("ix_cv_docx_final_snapshot_source_proposal", "source_proposal_artifact_fingerprint"),
+        Index("ix_cv_docx_final_snapshot_blob", "final_docx_sha256"),
+    )
+
+
+FINAL_DOCX_SNAPSHOT_TABLE_NAMES: frozenset[str] = frozenset({CvDocxFinalSnapshotRow.__tablename__})

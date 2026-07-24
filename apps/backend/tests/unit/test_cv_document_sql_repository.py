@@ -12,7 +12,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import sessionmaker
 
 import app.services.cv_document_sql_repository as repo_module
@@ -677,6 +677,181 @@ def test_same_blob_sha256_cannot_be_rebound_to_different_media_type(repo_env) ->
 
 
 # 25: defensive copies ------------------------------------------------------------
+
+
+# -- Explicit Provenance Stage P6-B1 SQL storage addendum: shared owner/blob
+# invariants (H1) -- CvDocumentArtifactSqlRepository and
+# FinalDocxSnapshotSqlRepository must enforce owner/blob invariants
+# identically because they call the exact same shared helper functions,
+# never two independently maintained copies. ------------------------------
+
+
+@pytest.fixture
+def dual_repo_env(repo_env):
+    from app.services.cv_document_final_snapshot_sql_repository import FinalDocxSnapshotSqlRepository
+
+    repo, session_factory, store, engine = repo_env
+    final_repo = FinalDocxSnapshotSqlRepository(session_factory, store)
+    return repo, final_repo, session_factory, store, engine
+
+
+def test_both_repositories_delegate_to_the_exact_same_shared_helpers(dual_repo_env) -> None:
+    """H1: not merely equivalent logic in two places -- the literal same
+    functions, imported from ``cv_document_storage_shared.py`` by both
+    repository modules."""
+
+    import app.services.cv_document_final_snapshot_sql_repository as final_repo_module
+    import app.services.cv_document_storage_shared as shared_module
+
+    assert repo_module._shared_ensure_owner is shared_module.ensure_owner
+    assert repo_module._shared_ensure_blob_row is shared_module.ensure_blob_row
+    assert repo_module._shared_require_owner_key is shared_module.require_owner_key
+    assert repo_module._shared_row_to_owner_key is shared_module.row_to_owner_key
+
+    assert final_repo_module.ensure_owner is shared_module.ensure_owner
+    assert final_repo_module.ensure_blob_row is shared_module.ensure_blob_row
+    assert final_repo_module.require_owner_key is shared_module.require_owner_key
+
+
+def test_both_repositories_block_owner_rebinding_identically(dual_repo_env) -> None:
+    from app.services.cv_document_storage_shared import ensure_owner
+
+    repo, final_repo, session_factory, store, _ = dual_repo_env
+    owner_key = _owner_key()
+
+    with session_factory() as session:
+        with session.begin():
+            ensure_owner(session, owner_key)
+
+    tampered_owner_key = owner_key.model_copy(update={"owner_reference_id": "a-different-reference-id"})
+
+    with session_factory() as session:
+        with session.begin():
+            with pytest.raises(CvDocumentStorageError) as exc_a:
+                ensure_owner(session, tampered_owner_key)
+    assert exc_a.value.result.error_code == CvDocumentStorageErrorCode.OWNER_IDENTITY_MISMATCH
+
+    # Same rebinding attempt, routed through each repository's own public
+    # surface, must fail the exact same way.
+    artifact = _make_proposal(tampered_owner_key, 1, b"owner rebinding via base repo")
+    with pytest.raises(CvDocumentStorageError) as exc_b:
+        repo.replace_current_proposal(tampered_owner_key, artifact, b"owner rebinding via base repo", None)
+    assert exc_b.value.result.error_code == CvDocumentStorageErrorCode.OWNER_IDENTITY_MISMATCH
+
+
+def test_both_repositories_block_media_type_conflict_identically(dual_repo_env) -> None:
+    repo, final_repo, session_factory, store, _ = dual_repo_env
+    owner_key = _owner_key()
+    content = b"bytes shared to prove symmetric media_type conflict enforcement"
+
+    a1 = _make_proposal(owner_key, 1, content)
+    repo.replace_current_proposal(owner_key, a1, content, None)
+
+    snapshot = _make_snapshot(owner_key, a1, content)
+    repo.save_validated_snapshot(snapshot, content)
+    pdf1 = _make_pdf(owner_key, snapshot, 1, content)
+    with pytest.raises(CvDocumentStorageError) as exc_info:
+        repo.replace_current_pdf(owner_key, pdf1, content, None)
+    assert exc_info.value.result.error_code == CvDocumentStorageErrorCode.STORAGE_METADATA_CONFLICT
+
+    # A FinalDocxSnapshot claiming the exact same bytes (still DOCX media
+    # type, matching the base repo's existing row) must NOT conflict --
+    # this proves the shared helper compares media_type/size/locator, not
+    # some other unrelated field.
+    from app.services.cv_document_final_snapshot_repository import (
+        FinalSnapshotSaveStatus,
+        compute_final_snapshot_fingerprint,
+    )
+    from app.schemas.cv_document_final_snapshot import FinalDocxSnapshot, FINAL_SNAPSHOT_SCHEMA_VERSION
+
+    fp = compute_final_snapshot_fingerprint(
+        owner_key_fingerprint=owner_key.owner_key_fingerprint,
+        source_proposal_artifact_fingerprint=a1.artifact_fingerprint,
+        source_proposal_revision=1,
+        generated_proposal_sha256=a1.generated_docx_content_hash,
+        final_docx_sha256=_sha256(content),
+        finalization_policy_version="final-policy-v1",
+        snapshot_schema_version=FINAL_SNAPSHOT_SCHEMA_VERSION,
+    )
+    final_snapshot = FinalDocxSnapshot(
+        owner_key=owner_key,
+        source_proposal_artifact_fingerprint=a1.artifact_fingerprint,
+        source_proposal_revision=1,
+        generated_proposal_sha256=a1.generated_docx_content_hash,
+        final_docx_sha256=_sha256(content),
+        edited_by_user=a1.generated_docx_content_hash != _sha256(content),
+        finalization_policy_version="final-policy-v1",
+        snapshot_schema_version=FINAL_SNAPSHOT_SCHEMA_VERSION,
+        final_snapshot_fingerprint=fp,
+    )
+    result = final_repo.save_final_docx_snapshot(final_snapshot, content)
+    assert result.status == FinalSnapshotSaveStatus.SAVED
+
+
+def test_both_repositories_block_locator_conflict_identically(dual_repo_env) -> None:
+    from app.services.cv_document_storage_shared import ensure_blob_row
+
+    repo, final_repo, session_factory, store, _ = dual_repo_env
+    content = b"bytes for a corrupted-locator conflict test"
+    sha = _sha256(content)
+    store.write_blob(content)
+
+    with session_factory() as session:
+        with session.begin():
+            ensure_blob_row(session, store, blob_sha256=sha, byte_size=len(content), media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+    with session_factory() as session:
+        with session.begin():
+            session.execute(
+                text(
+                    "UPDATE cv_document_blobs SET storage_locator = 'corrupted/locator/path' WHERE blob_sha256 = :sha"
+                ),
+                {"sha": sha},
+            )
+
+    with session_factory() as session:
+        with session.begin():
+            with pytest.raises(CvDocumentStorageError) as exc_info:
+                ensure_blob_row(
+                    session,
+                    store,
+                    blob_sha256=sha,
+                    byte_size=len(content),
+                    media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+    assert exc_info.value.result.error_code == CvDocumentStorageErrorCode.STORAGE_METADATA_CONFLICT
+
+
+def test_both_repositories_block_byte_size_conflict_identically(dual_repo_env) -> None:
+    from app.services.cv_document_storage_shared import ensure_blob_row
+
+    repo, final_repo, session_factory, store, _ = dual_repo_env
+    content = b"bytes for a corrupted-byte_size conflict test"
+    sha = _sha256(content)
+    store.write_blob(content)
+
+    with session_factory() as session:
+        with session.begin():
+            ensure_blob_row(session, store, blob_sha256=sha, byte_size=len(content), media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+    with session_factory() as session:
+        with session.begin():
+            session.execute(
+                text("UPDATE cv_document_blobs SET byte_size = byte_size + 12345 WHERE blob_sha256 = :sha"),
+                {"sha": sha},
+            )
+
+    with session_factory() as session:
+        with session.begin():
+            with pytest.raises(CvDocumentStorageError) as exc_info:
+                ensure_blob_row(
+                    session,
+                    store,
+                    blob_sha256=sha,
+                    byte_size=len(content),
+                    media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+    assert exc_info.value.result.error_code == CvDocumentStorageErrorCode.STORAGE_METADATA_CONFLICT
 
 
 def test_returned_domain_objects_are_defensive_copies(repo_env) -> None:

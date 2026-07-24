@@ -19,6 +19,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.models import Base, MetricEvent
 
+# Explicit import registers the P6-B1 document-storage-foundation ORM
+# models on ``Base.metadata`` before any ``create_all``/preflight below --
+# see the P6-B1 section further down and docs/explicit-provenance-stage-p6b1.md.
+from app.services.cv_document_models import P6B1_TABLE_NAMES
+
 __all__ = [
     "Base",
     "make_async_engine",
@@ -26,6 +31,7 @@ __all__ = [
     "init_models_sync",
     "preflight_explicit_provenance_p1_schema",
     "preflight_explicit_provenance_p2_schema",
+    "preflight_explicit_provenance_p6b1_schema",
 ]
 
 
@@ -442,6 +448,130 @@ def explicit_provenance_p2_schema_manifest(engine: Engine) -> dict[str, Any]:
         return _collect_p2_schema_manifest(conn)
 
 
+# ---------------------------------------------------------------------------
+# Explicit Provenance P6-B1 — document storage foundation schema.
+#
+# Adds exactly seven managed tables (owner registry, global content-addressed
+# blob metadata, immutable proposal/snapshot/PDF artifact rows, and the two
+# independent current-proposal/current-PDF slot tables) on top of whatever
+# P1/P2 schema is already present. Same additive, read-only-preflight-first
+# contract as P1/P2: every one of the three preflights below runs, read-only,
+# before any DDL for any of them; an incompatible or partial P6-B1 schema is
+# never auto-repaired. See docs/explicit-provenance-stage-p6b1.md.
+# ---------------------------------------------------------------------------
+_P6B1_MANIFEST_VERSION = "explicit-provenance-p6b1-schema-manifest-v1"
+_P6B1_TABLE_COLUMNS = {
+    "cv_document_artifact_owners": {
+        "owner_key_fingerprint", "person_entity_id", "owner_kind", "owner_reference_id",
+        "owner_key_schema_version", "created_at",
+    },
+    "cv_document_blobs": {
+        "blob_sha256", "byte_size", "media_type", "storage_locator", "storage_status",
+        "created_at", "verified_at",
+    },
+    "cv_docx_proposal_artifacts": {
+        "artifact_fingerprint", "owner_key_fingerprint", "artifact_id",
+        "approved_cv_content_fingerprint", "content_plan_fingerprint",
+        "role_strategy_context_fingerprint", "document_schema_version",
+        "rendering_policy_version", "renderer_adapter_id", "template_fingerprint",
+        "generation_input_fingerprint", "generated_docx_content_hash", "current_file_hash",
+        "validated_file_hash", "proposal_revision", "provenance_mode",
+        "artifact_storage_status", "blob_sha256", "created_at",
+    },
+    "cv_docx_validated_snapshots": {
+        "snapshot_fingerprint", "owner_key_fingerprint", "proposal_artifact_fingerprint",
+        "proposal_revision", "blob_sha256", "exact_docx_sha256",
+        "approved_cv_content_fingerprint", "content_plan_fingerprint", "template_fingerprint",
+        "validation_policy_version", "manual_confirmation_fingerprint", "provenance_mode",
+        "artifact_storage_status", "created_at",
+    },
+    "cv_confirmed_pdf_artifacts": {
+        "artifact_fingerprint", "owner_key_fingerprint", "artifact_id",
+        "source_validated_docx_snapshot_fingerprint", "source_docx_sha256",
+        "approved_cv_content_fingerprint", "content_plan_fingerprint", "pdf_sha256",
+        "conversion_adapter_id", "conversion_policy_version", "provenance_mode",
+        "pdf_revision", "blob_sha256", "artifact_storage_status", "created_at",
+    },
+    "cv_document_proposal_slots": {
+        "owner_key_fingerprint", "current_artifact_fingerprint", "current_revision",
+        "slot_version", "updated_at",
+    },
+    "cv_document_pdf_slots": {
+        "owner_key_fingerprint", "current_artifact_fingerprint", "current_revision",
+        "slot_version", "updated_at",
+    },
+}
+_P6B1_CANONICAL_LOWER: dict[str, str] = {name.lower(): name for name in _P6B1_TABLE_COLUMNS}
+
+
+def _p6b1_existing_tables(conn: Any) -> set[str]:
+    return _existing_tables_for(
+        conn, _P6B1_CANONICAL_LOWER, error_code="ERROR_INCOMPATIBLE_P6B1_SCHEMA_NAME"
+    )
+
+
+def _collect_p6b1_schema_manifest(conn: Any) -> dict[str, Any]:
+    tables = {
+        table: _collect_single_table_manifest(conn, table)
+        for table in sorted(_P6B1_TABLE_COLUMNS)
+    }
+    return {"manifest_version": _P6B1_MANIFEST_VERSION, "tables": tables}
+
+
+@lru_cache(maxsize=1)
+def _expected_p6b1_schema_manifest() -> dict[str, Any]:
+    """Build the approved P6-B1 manifest in an isolated reference database,
+    using the same full ``Base.metadata.create_all`` reference technique as
+    P1/P2 so FK targets outside the seven P6-B1 tables are still resolvable."""
+
+    reference = create_engine("sqlite:///:memory:", future=True)
+    try:
+        Base.metadata.create_all(reference)
+        with reference.connect() as conn:
+            return _collect_p6b1_schema_manifest(conn)
+    finally:
+        reference.dispose()
+
+
+def preflight_explicit_provenance_p6b1_schema(engine: Engine) -> str:
+    """Fully validate existing P6-B1 DDL without mutating or repairing the
+    target. Must be called read-only, before any DDL, alongside the P1/P2
+    preflights -- see the ordering contract in
+    docs/explicit-provenance-stage-p6b1.md."""
+
+    with engine.connect() as conn:
+        existing = _p6b1_existing_tables(conn)
+        if not existing:
+            return "ABSENT_CREATE_REQUIRED"
+        if existing != set(_P6B1_TABLE_COLUMNS):
+            names = ",".join(sorted(existing))
+            raise RuntimeError(f"ERROR_PARTIAL_P6B1_SCHEMA:existing={names}")
+        actual = _collect_p6b1_schema_manifest(conn)
+    expected = _expected_p6b1_schema_manifest()
+    if actual != expected:
+        raise RuntimeError(
+            "ERROR_INCOMPATIBLE_P6B1_SCHEMA:"
+            f"expected={_manifest_digest(expected)}:actual={_manifest_digest(actual)}"
+        )
+    return "P6B1_SCHEMA_READY"
+
+
+def _validate_p6b1_runtime_manifest(engine: Engine) -> None:
+    state = preflight_explicit_provenance_p6b1_schema(engine)
+    if state != "P6B1_SCHEMA_READY":
+        raise RuntimeError(f"ERROR_INCOMPATIBLE_P6B1_SCHEMA:state={state}")
+
+
+def explicit_provenance_p6b1_schema_manifest(engine: Engine) -> dict[str, Any]:
+    """Return the complete versioned P6-B1 manifest used by fail-closed preflight."""
+
+    with engine.connect() as conn:
+        existing = _p6b1_existing_tables(conn)
+        if existing != set(_P6B1_TABLE_COLUMNS):
+            raise RuntimeError("ERROR_PARTIAL_P6B1_SCHEMA:manifest_unavailable")
+        return _collect_p6b1_schema_manifest(conn)
+
+
 def _apply_sqlite_pragmas(dbapi_connection: Any, _connection_record: Any) -> None:
     """Set per-connection SQLite PRAGMAs.
 
@@ -486,20 +616,23 @@ def make_sync_engine(path: Path) -> Engine:
 def init_models_sync(engine: Engine) -> None:
     """Create all tables (idempotent) using a sync engine connection.
 
-    Preflight ordering is a hard contract (docs/explicit-provenance-stage-p2.md):
-    both the P1 and the P2 schema preflight run — read-only — *before* any DDL
-    executes. Either raising aborts the whole call before a single mutation, so
-    an incompatible P2 table can never let P1 (or vice-versa) get created/mutated.
+    Preflight ordering is a hard contract (docs/explicit-provenance-stage-p2.md,
+    docs/explicit-provenance-stage-p6b1.md): the P1, P2, **and P6-B1** schema
+    preflights all run — read-only — *before* any DDL executes. Any one of
+    them raising aborts the whole call before a single mutation, so an
+    incompatible P2 or P6-B1 table can never let P1 (or each other) get
+    created/mutated.
     """
     p1_state = preflight_explicit_provenance_p1_schema(engine)
     p2_state = preflight_explicit_provenance_p2_schema(engine)
+    p6b1_state = preflight_explicit_provenance_p6b1_schema(engine)
 
-    # The P2 table is deliberately excluded from every generic/broad create_all
-    # path below; it is only ever created via its own controlled branch after
-    # both preflights have passed.
+    # The P2 and P6-B1 tables are deliberately excluded from every
+    # generic/broad create_all path below; each is only ever created via its
+    # own controlled branch after all three preflights have passed.
     non_p2_tables = [
         table for table in Base.metadata.sorted_tables
-        if table.name not in _P2_TABLE_COLUMNS
+        if table.name not in _P2_TABLE_COLUMNS and table.name not in _P6B1_TABLE_COLUMNS
     ]
 
     if p1_state == "ABSENT_CREATE_REQUIRED":
@@ -511,9 +644,14 @@ def init_models_sync(engine: Engine) -> None:
         # EXISTS repair, trigger installation, or P1 sqlite_master mutation.
         _validate_p1_runtime_manifest(engine)
         # Preserve the pre-existing additive migration contract for legacy
-        # tables without ever invoking create_all or create on a P1 or P2 table.
+        # tables without ever invoking create_all or create on a P1, P2, or
+        # P6-B1 table.
         for table in Base.metadata.sorted_tables:
-            if table.name not in _P1_TABLE_COLUMNS and table.name not in _P2_TABLE_COLUMNS:
+            if (
+                table.name not in _P1_TABLE_COLUMNS
+                and table.name not in _P2_TABLE_COLUMNS
+                and table.name not in _P6B1_TABLE_COLUMNS
+            ):
                 table.create(engine, checkfirst=True)
     else:  # Defensive: preflight raises for every non-ready existing state.
         raise RuntimeError(f"ERROR_INCOMPATIBLE_P1_SCHEMA:state={p1_state}")
@@ -526,6 +664,21 @@ def init_models_sync(engine: Engine) -> None:
         _validate_p2_runtime_manifest(engine)
     else:  # Defensive: preflight raises for every non-ready existing state.
         raise RuntimeError(f"ERROR_INCOMPATIBLE_P2_SCHEMA:state={p2_state}")
+
+    if p6b1_state == "ABSENT_CREATE_REQUIRED":
+        # FK-dependency order (owners -> blobs -> proposal artifacts ->
+        # snapshots -> pdf artifacts -> the two slot tables) comes from
+        # ``sorted_tables``'s own topological sort -- never an alphabetical
+        # or hand-maintained order.
+        for table in Base.metadata.sorted_tables:
+            if table.name in _P6B1_TABLE_COLUMNS:
+                table.create(engine, checkfirst=True)
+        _validate_p6b1_runtime_manifest(engine)
+    elif p6b1_state == "P6B1_SCHEMA_READY":
+        # Deliberately read-only for existing P6-B1 DDL, same contract as P1/P2.
+        _validate_p6b1_runtime_manifest(engine)
+    else:  # Defensive: preflight raises for every non-ready existing state.
+        raise RuntimeError(f"ERROR_INCOMPATIBLE_P6B1_SCHEMA:state={p6b1_state}")
 
     # ``create_all`` does not ALTER existing SQLite tables. Keep this additive
     # migration idempotent so older local databases can load resumes safely.

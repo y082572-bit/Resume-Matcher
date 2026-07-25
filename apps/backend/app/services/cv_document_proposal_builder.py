@@ -48,6 +48,8 @@ def compute_generation_input_fingerprint(
     renderer_adapter_id: str,
     rendering_policy_version: str,
     document_schema_version: str,
+    source_personal_info_fingerprint: str | None = None,
+    render_plan_fingerprint: str | None = None,
 ) -> str:
     content = {
         "fingerprint_version": GENERATION_INPUT_FINGERPRINT_VERSION,
@@ -60,6 +62,14 @@ def compute_generation_input_fingerprint(
             "renderer_adapter_id": renderer_adapter_id,
             "rendering_policy_version": rendering_policy_version,
             "document_schema_version": document_schema_version,
+            # Owner-bound header identity (P6-B2A-R1, additive): a change to
+            # full_name/email/phone/location/LinkedIn changes
+            # source_personal_info_fingerprint/render_plan_fingerprint and
+            # therefore this fingerprint, so it always propagates into
+            # artifact_fingerprint below. None for any caller that does not
+            # generate a header (unchanged P6-A semantics).
+            "source_personal_info_fingerprint": source_personal_info_fingerprint,
+            "render_plan_fingerprint": render_plan_fingerprint,
         },
     }
     return hashlib.sha256(canonical_json_bytes(content)).hexdigest()
@@ -92,6 +102,8 @@ def build_current_docx_proposal(
     repository: CvDocumentArtifactRepository,
     rendering_policy_version: str,
     expected_previous_revision: int | None,
+    source_personal_info_fingerprint: str | None = None,
+    render_plan_fingerprint: str | None = None,
 ) -> CvDocxProposalBuildResult:
     validation_result = validate_approved_content_document_input(document_input)
     if validation_result.status != DocumentInputValidationStatus.VALID:
@@ -153,6 +165,8 @@ def build_current_docx_proposal(
         renderer_adapter_id=rendering_result.renderer_adapter_id,
         rendering_policy_version=rendering_result.rendering_policy_version,
         document_schema_version=DOCUMENT_SCHEMA_VERSION,
+        source_personal_info_fingerprint=source_personal_info_fingerprint,
+        render_plan_fingerprint=render_plan_fingerprint,
     )
 
     proposal_revision = (expected_previous_revision or 0) + 1

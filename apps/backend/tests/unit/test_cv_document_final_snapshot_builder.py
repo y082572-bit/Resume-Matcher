@@ -532,6 +532,100 @@ def test_builder_never_imports_cv_document_storage_error() -> None:
     assert not any("cv_document_final_snapshot_sql_repository" in line for line in imports)
 
 
+# Explicit Provenance Stage P6-B2b-B addendum: the builder's own
+# _READ_FAILURE_TO_BUILD_STATUS mapping is now a *complete*, fallback-free
+# 1:1 mapping of every non-SUCCESS WorkingCopyReadStatus member (including
+# every new P6-B2b-B member) onto its corresponding FinalDocxSnapshotBuildStatus.
+
+
+def test_builder_never_imports_filesystem_reader_or_lineage_sql_reader() -> None:
+    """The builder stays a pure domain layer -- it must never import the
+    real filesystem reader or the SQL-backed Proposal lineage reader; both
+    only ever reach it indirectly, through the closed FinalDocxSourceReader
+    Protocol."""
+
+    imports = _import_lines(builder_module)
+    assert not any("cv_document_final_source_filesystem_reader" in line for line in imports)
+    assert not any("cv_document_proposal_artifact_lineage" in line for line in imports)
+    assert not any("cv_document_finalize_working_copy" in line for line in imports)
+
+
+def test_all_read_failures_are_covered_by_the_mapping() -> None:
+    """Every non-SUCCESS WorkingCopyReadStatus member -- including every
+    new P6-B2b-B addition -- must appear in
+    ``_READ_FAILURE_TO_BUILD_STATUS``. A future addition to the enum that
+    forgets to also add a builder mapping entry fails this test."""
+
+    non_success = {s for s in WorkingCopyReadStatus if s != WorkingCopyReadStatus.SUCCESS}
+    assert non_success == set(builder_module._READ_FAILURE_TO_BUILD_STATUS)
+
+
+def test_mapping_has_no_fallback_get_call() -> None:
+    """AST-level check: the builder must index ``_READ_FAILURE_TO_BUILD_STATUS``
+    directly (``mapping[key]``) -- never ``.get(key, default)``, which
+    would silently collapse an unmapped future status onto some default
+    instead of raising ``KeyError`` (caught nowhere, and thus surfacing
+    loudly in CI) the moment the enum and the mapping drift apart."""
+
+    import ast
+
+    tree = ast.parse(inspect.getsource(builder_module))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get":
+            if isinstance(node.func.value, ast.Name) and node.func.value.id == "_READ_FAILURE_TO_BUILD_STATUS":
+                pytest.fail("_READ_FAILURE_TO_BUILD_STATUS must be indexed directly, never via .get(..., default)")
+
+
+@pytest.mark.parametrize(
+    "read_status,expected_build_status",
+    [
+        (WorkingCopyReadStatus.OWNER_KEY_FINGERPRINT_MISMATCH, FinalDocxSnapshotBuildStatus.OWNER_KEY_FINGERPRINT_MISMATCH),
+        (WorkingCopyReadStatus.WORKING_COPY_BINDING_MISSING, FinalDocxSnapshotBuildStatus.WORKING_COPY_BINDING_MISSING),
+        (WorkingCopyReadStatus.WORKING_COPY_BINDING_INVALID, FinalDocxSnapshotBuildStatus.WORKING_COPY_BINDING_INVALID),
+        (
+            WorkingCopyReadStatus.WORKING_COPY_BINDING_OWNER_MISMATCH,
+            FinalDocxSnapshotBuildStatus.WORKING_COPY_BINDING_OWNER_MISMATCH,
+        ),
+        (WorkingCopyReadStatus.WORKING_COPY_BINDING_TOO_LARGE, FinalDocxSnapshotBuildStatus.WORKING_COPY_BINDING_TOO_LARGE),
+        (WorkingCopyReadStatus.LOCK_CAPABILITY_INVALID, FinalDocxSnapshotBuildStatus.LOCK_CAPABILITY_INVALID),
+        (
+            WorkingCopyReadStatus.WORKING_COPY_LOCK_PATH_IDENTITY_MISMATCH,
+            FinalDocxSnapshotBuildStatus.WORKING_COPY_LOCK_PATH_IDENTITY_MISMATCH,
+        ),
+        (WorkingCopyReadStatus.SOURCE_PROPOSAL_NOT_FOUND, FinalDocxSnapshotBuildStatus.SOURCE_PROPOSAL_NOT_FOUND),
+        (
+            WorkingCopyReadStatus.SOURCE_PROPOSAL_OWNER_MISMATCH,
+            FinalDocxSnapshotBuildStatus.SOURCE_PROPOSAL_OWNER_MISMATCH,
+        ),
+        (
+            WorkingCopyReadStatus.SOURCE_PROPOSAL_REVISION_MISMATCH,
+            FinalDocxSnapshotBuildStatus.SOURCE_PROPOSAL_REVISION_MISMATCH,
+        ),
+        (WorkingCopyReadStatus.SOURCE_PROPOSAL_HASH_MISMATCH, FinalDocxSnapshotBuildStatus.SOURCE_PROPOSAL_HASH_MISMATCH),
+        (WorkingCopyReadStatus.STORAGE_UNAVAILABLE, FinalDocxSnapshotBuildStatus.STORAGE_UNAVAILABLE),
+    ],
+)
+def test_new_p6b2bb_read_statuses_map_to_their_build_status(
+    read_status: WorkingCopyReadStatus, expected_build_status: FinalDocxSnapshotBuildStatus
+) -> None:
+    owner_key = build_owner_key(
+        person_entity_id=uuid4(), owner_kind=ArtifactOwnerKind.JOB, owner_reference_id="job-new-status-mapping-test"
+    )
+    reader = _SpySourceReader(_failure(read_status))
+    repository = InMemoryFinalDocxSnapshotRepository()
+
+    result = finalize_current_docx_for_pdf(
+        owner_key=owner_key,
+        expected_proposal_artifact_fingerprint=_sha("proposal"),
+        expected_proposal_revision=1,
+        source_reader=reader,
+        snapshot_repository=repository,
+        finalization_policy_version=FINALIZATION_POLICY_VERSION,
+    )
+    assert result.status == expected_build_status
+    assert result.snapshot is None
+
+
 def test_builder_has_no_infrastructural_try_except() -> None:
     """AST-level check: the builder module must contain no ``try``/
     ``except`` block at all -- every branch is a plain status comparison

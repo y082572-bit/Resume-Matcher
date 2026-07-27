@@ -15,6 +15,15 @@ to treat this capture as the *only* trusted source of that baseline --
 never a caller-supplied argument -- and to independently re-verify the
 binding before using it. A failed read never carries a capture and never
 carries bytes.
+
+Explicit Provenance Stage P6-B2b-B addendum: the additive
+``WorkingCopyReadStatus`` members below (``OWNER_KEY_FINGERPRINT_MISMATCH``
+through ``STORAGE_UNAVAILABLE``) are the closed set of failures a real
+filesystem-backed implementation (``cv_document_final_source_filesystem_reader.py``)
+can report -- covering owner-identity revalidation, the owner-lock
+capability/identity boundary, ``binding.json`` sidecar classification, and
+an owner-bound Proposal artifact lineage re-verification. None of the
+pre-existing members are removed or repurposed.
 """
 
 from __future__ import annotations
@@ -36,6 +45,20 @@ class WorkingCopyReadStatus(StrEnum):
     WORKING_COPY_CHANGED_DURING_READ = "WORKING_COPY_CHANGED_DURING_READ"
     WORKING_COPY_TOO_LARGE = "WORKING_COPY_TOO_LARGE"
     WORKING_COPY_BINDING_MISMATCH = "WORKING_COPY_BINDING_MISMATCH"
+    # Explicit Provenance Stage P6-B2b-B addendum: additive -- only ever
+    # returned by a real filesystem-backed FinalDocxSourceReader.
+    OWNER_KEY_FINGERPRINT_MISMATCH = "OWNER_KEY_FINGERPRINT_MISMATCH"
+    WORKING_COPY_BINDING_MISSING = "WORKING_COPY_BINDING_MISSING"
+    WORKING_COPY_BINDING_INVALID = "WORKING_COPY_BINDING_INVALID"
+    WORKING_COPY_BINDING_OWNER_MISMATCH = "WORKING_COPY_BINDING_OWNER_MISMATCH"
+    WORKING_COPY_BINDING_TOO_LARGE = "WORKING_COPY_BINDING_TOO_LARGE"
+    LOCK_CAPABILITY_INVALID = "LOCK_CAPABILITY_INVALID"
+    WORKING_COPY_LOCK_PATH_IDENTITY_MISMATCH = "WORKING_COPY_LOCK_PATH_IDENTITY_MISMATCH"
+    SOURCE_PROPOSAL_NOT_FOUND = "SOURCE_PROPOSAL_NOT_FOUND"
+    SOURCE_PROPOSAL_OWNER_MISMATCH = "SOURCE_PROPOSAL_OWNER_MISMATCH"
+    SOURCE_PROPOSAL_REVISION_MISMATCH = "SOURCE_PROPOSAL_REVISION_MISMATCH"
+    SOURCE_PROPOSAL_HASH_MISMATCH = "SOURCE_PROPOSAL_HASH_MISMATCH"
+    STORAGE_UNAVAILABLE = "STORAGE_UNAVAILABLE"
 
 
 class FinalDocxSourceCapture(BaseModel):

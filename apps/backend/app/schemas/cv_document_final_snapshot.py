@@ -96,6 +96,18 @@ class FinalDocxSnapshotBuildStatus(StrEnum):
     SOURCE_PROPOSAL_HASH_MISMATCH = "SOURCE_PROPOSAL_HASH_MISMATCH"
     STORAGE_METADATA_CONFLICT = "STORAGE_METADATA_CONFLICT"
     STORAGE_UNAVAILABLE = "STORAGE_UNAVAILABLE"
+    # Explicit Provenance Stage P6-B2b-B addendum: additive -- each
+    # corresponds 1:1 to a WorkingCopyReadStatus/WorkingCopyInspectionStatus
+    # of the same cause that only a real filesystem-backed
+    # FinalDocxSourceReader/the finalize_working_copy_to_final_docx_snapshot
+    # composition root can ever return.
+    OWNER_KEY_FINGERPRINT_MISMATCH = "OWNER_KEY_FINGERPRINT_MISMATCH"
+    WORKING_COPY_BINDING_MISSING = "WORKING_COPY_BINDING_MISSING"
+    WORKING_COPY_BINDING_INVALID = "WORKING_COPY_BINDING_INVALID"
+    WORKING_COPY_BINDING_OWNER_MISMATCH = "WORKING_COPY_BINDING_OWNER_MISMATCH"
+    WORKING_COPY_BINDING_TOO_LARGE = "WORKING_COPY_BINDING_TOO_LARGE"
+    LOCK_CAPABILITY_INVALID = "LOCK_CAPABILITY_INVALID"
+    WORKING_COPY_LOCK_PATH_IDENTITY_MISMATCH = "WORKING_COPY_LOCK_PATH_IDENTITY_MISMATCH"
 
 
 class FinalDocxSnapshotBuildResult(BaseModel):

@@ -40,6 +40,14 @@ from app.services.cv_document_final_source_reader import (
 from app.services.cv_document_owner_identity import compute_owner_key_fingerprint
 
 
+#: Explicit Provenance Stage P6-B2b-B addendum: this mapping is now a
+#: *complete*, fallback-free 1:1 mapping of every non-``SUCCESS``
+#: ``WorkingCopyReadStatus`` member onto its corresponding
+#: ``FinalDocxSnapshotBuildStatus`` -- every new P6-B2b-B member shares its
+#: exact name across both enums, so the mapping is a name-preserving
+#: passthrough. ``test_all_read_failures_are_covered_by_the_mapping`` in the
+#: unit tests fails if a future addition to ``WorkingCopyReadStatus`` is
+#: ever left unmapped.
 _READ_FAILURE_TO_BUILD_STATUS: dict[WorkingCopyReadStatus, FinalDocxSnapshotBuildStatus] = {
     WorkingCopyReadStatus.WORKING_COPY_MISSING: FinalDocxSnapshotBuildStatus.WORKING_COPY_MISSING,
     WorkingCopyReadStatus.WORKING_COPY_UNREADABLE: FinalDocxSnapshotBuildStatus.WORKING_COPY_UNREADABLE,
@@ -51,6 +59,36 @@ _READ_FAILURE_TO_BUILD_STATUS: dict[WorkingCopyReadStatus, FinalDocxSnapshotBuil
     WorkingCopyReadStatus.WORKING_COPY_BINDING_MISMATCH: (
         FinalDocxSnapshotBuildStatus.WORKING_COPY_BINDING_MISMATCH
     ),
+    WorkingCopyReadStatus.OWNER_KEY_FINGERPRINT_MISMATCH: (
+        FinalDocxSnapshotBuildStatus.OWNER_KEY_FINGERPRINT_MISMATCH
+    ),
+    WorkingCopyReadStatus.WORKING_COPY_BINDING_MISSING: (
+        FinalDocxSnapshotBuildStatus.WORKING_COPY_BINDING_MISSING
+    ),
+    WorkingCopyReadStatus.WORKING_COPY_BINDING_INVALID: (
+        FinalDocxSnapshotBuildStatus.WORKING_COPY_BINDING_INVALID
+    ),
+    WorkingCopyReadStatus.WORKING_COPY_BINDING_OWNER_MISMATCH: (
+        FinalDocxSnapshotBuildStatus.WORKING_COPY_BINDING_OWNER_MISMATCH
+    ),
+    WorkingCopyReadStatus.WORKING_COPY_BINDING_TOO_LARGE: (
+        FinalDocxSnapshotBuildStatus.WORKING_COPY_BINDING_TOO_LARGE
+    ),
+    WorkingCopyReadStatus.LOCK_CAPABILITY_INVALID: FinalDocxSnapshotBuildStatus.LOCK_CAPABILITY_INVALID,
+    WorkingCopyReadStatus.WORKING_COPY_LOCK_PATH_IDENTITY_MISMATCH: (
+        FinalDocxSnapshotBuildStatus.WORKING_COPY_LOCK_PATH_IDENTITY_MISMATCH
+    ),
+    WorkingCopyReadStatus.SOURCE_PROPOSAL_NOT_FOUND: FinalDocxSnapshotBuildStatus.SOURCE_PROPOSAL_NOT_FOUND,
+    WorkingCopyReadStatus.SOURCE_PROPOSAL_OWNER_MISMATCH: (
+        FinalDocxSnapshotBuildStatus.SOURCE_PROPOSAL_OWNER_MISMATCH
+    ),
+    WorkingCopyReadStatus.SOURCE_PROPOSAL_REVISION_MISMATCH: (
+        FinalDocxSnapshotBuildStatus.SOURCE_PROPOSAL_REVISION_MISMATCH
+    ),
+    WorkingCopyReadStatus.SOURCE_PROPOSAL_HASH_MISMATCH: (
+        FinalDocxSnapshotBuildStatus.SOURCE_PROPOSAL_HASH_MISMATCH
+    ),
+    WorkingCopyReadStatus.STORAGE_UNAVAILABLE: FinalDocxSnapshotBuildStatus.STORAGE_UNAVAILABLE,
 }
 
 # Explicit Provenance Stage P6-B1 SQL storage addendum: additive 1:1
@@ -91,9 +129,7 @@ def finalize_current_docx_for_pdf(
     )
 
     if read_result.status != WorkingCopyReadStatus.SUCCESS:
-        mapped_status = _READ_FAILURE_TO_BUILD_STATUS.get(
-            read_result.status, FinalDocxSnapshotBuildStatus.WORKING_COPY_UNREADABLE
-        )
+        mapped_status = _READ_FAILURE_TO_BUILD_STATUS[read_result.status]
         return FinalDocxSnapshotBuildResult(
             status=mapped_status,
             diagnostics=(read_result.error_message or mapped_status.value,),

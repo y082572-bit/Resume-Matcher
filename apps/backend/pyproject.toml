@@ -53,14 +53,17 @@ asyncio_mode = "auto"
 addopts = [
     "--strict-markers",
     "-v",
-    # Exclude LLM-as-judge evals from the default run (they may call a real
-    # provider and are non-deterministic). Run them on demand with `-m eval`.
+    # Exclude LLM-as-judge evals and real-runtime (real subprocess/binary)
+    # tests from the default run -- both are non-deterministic w.r.t. the
+    # local machine's configuration. Run them on demand with `-m eval` or
+    # `-m real_runtime` respectively.
     "-m",
-    "not eval",
+    "not eval and not real_runtime",
 ]
 markers = [
     "unit: pure function tests, no external dependencies",
     "service: service layer tests with mocked LLM",
     "integration: API endpoint tests with httpx AsyncClient",
     "eval: prompt-quality evaluations; may call a real LLM, skipped without a configured key",
+    "real_runtime: exercises a real external binary/subprocess (e.g. LibreOffice); skipped without a configured runtime",
 ]

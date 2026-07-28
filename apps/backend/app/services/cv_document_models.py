@@ -36,6 +36,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -589,3 +590,171 @@ class CvDocxFinalSnapshotRow(Base):
 
 
 FINAL_DOCX_SNAPSHOT_TABLE_NAMES: frozenset[str] = frozenset({CvDocxFinalSnapshotRow.__tablename__})
+
+
+# ---------------------------------------------------------------------------
+# Explicit Provenance Stage P6-B3b-A -- final confirmed PDF storage and
+# cross-line current authority.
+#
+# Two wholly new, additive tables. ``cv_final_confirmed_pdf_artifacts`` is a
+# strictly separate, immutable artifact line from the legacy
+# ``cv_confirmed_pdf_artifacts`` -- it never reuses that table, never carries
+# ``approved_cv_content_fingerprint``/``content_plan_fingerprint``/the legacy
+# ``provenance_mode``, and never has a mutable lifecycle column of its own.
+# ``cv_confirmed_pdf_current_authority`` is the single product-facing
+# current-PDF authority for *both* lineages (``LEGACY_VALIDATED_DOCX`` and
+# ``FINAL_DOCX_SNAPSHOT``); the legacy ``cv_document_pdf_slots`` table is
+# frozen (INSERT/UPDATE/DELETE all blocked by trigger -- installed by
+# ``cv_document_final_confirmed_pdf_sql_repository.py``'s own cutover
+# installer, never here) the moment this cutover completes. See
+# ``cv_document_final_confirmed_pdf_cutover_state.py`` for the full
+# migration/trigger contract.
+# ---------------------------------------------------------------------------
+
+
+class CvFinalConfirmedPdfArtifactRow(Base):
+    """One immutable ``FinalConfirmedPdfArtifact`` row. Never carries an
+    ``is_current``/``superseded``/``deleted``/status column -- current
+    status for this line is exclusively expressed by
+    ``cv_confirmed_pdf_current_authority``."""
+
+    __tablename__ = "cv_final_confirmed_pdf_artifacts"
+
+    artifact_fingerprint: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_key_fingerprint: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("cv_document_artifact_owners.owner_key_fingerprint", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    source_final_snapshot_fingerprint: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("cv_docx_final_snapshots.final_snapshot_fingerprint", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    source_final_docx_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    conversion_request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    runtime_identity_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    runtime_identity_json: Mapped[str] = mapped_column(Text, nullable=False)
+    conversion_policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    pdf_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    blob_sha256: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("cv_document_blobs.blob_sha256", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    conversion_request_fingerprint_schema_version: Mapped[str] = mapped_column(
+        String(64), nullable=False
+    )
+    artifact_fingerprint_schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False, default=_utcnow_iso)
+
+    __table_args__ = (
+        CheckConstraint(
+            _SHA256_CHECK.format(name="artifact_fingerprint"),
+            name="ck_cv_final_confirmed_pdf_artifact_fingerprint",
+        ),
+        CheckConstraint(
+            _SHA256_CHECK.format(name="source_final_snapshot_fingerprint"),
+            name="ck_cv_final_confirmed_pdf_source_snapshot_fp",
+        ),
+        CheckConstraint(
+            _SHA256_CHECK.format(name="source_final_docx_sha256"),
+            name="ck_cv_final_confirmed_pdf_source_docx_sha256",
+        ),
+        CheckConstraint(
+            _SHA256_CHECK.format(name="conversion_request_fingerprint"),
+            name="ck_cv_final_confirmed_pdf_request_fp",
+        ),
+        CheckConstraint(
+            _SHA256_CHECK.format(name="runtime_identity_fingerprint"),
+            name="ck_cv_final_confirmed_pdf_runtime_identity_fp",
+        ),
+        CheckConstraint(
+            _SHA256_CHECK.format(name="pdf_sha256"),
+            name="ck_cv_final_confirmed_pdf_sha256",
+        ),
+        CheckConstraint(
+            _SHA256_CHECK.format(name="blob_sha256"),
+            name="ck_cv_final_confirmed_pdf_blob_sha256",
+        ),
+        CheckConstraint(
+            "pdf_sha256 = blob_sha256",
+            name="ck_cv_final_confirmed_pdf_hash_eq_blob",
+        ),
+        CheckConstraint(
+            "trim(conversion_policy_version) != ''",
+            name="ck_cv_final_confirmed_pdf_policy_version_not_blank",
+        ),
+        CheckConstraint(
+            "length(conversion_policy_version) <= 64",
+            name="ck_cv_final_confirmed_pdf_policy_version_length",
+        ),
+        CheckConstraint(
+            "conversion_request_fingerprint_schema_version = "
+            "'cv-final-confirmed-pdf-request-fingerprint-schema-v1'",
+            name="ck_cv_final_confirmed_pdf_request_schema_version",
+        ),
+        CheckConstraint(
+            "artifact_fingerprint_schema_version = "
+            "'cv-final-confirmed-pdf-artifact-fingerprint-schema-v1'",
+            name="ck_cv_final_confirmed_pdf_artifact_schema_version",
+        ),
+        CheckConstraint(
+            "trim(runtime_identity_json) != ''",
+            name="ck_cv_final_confirmed_pdf_runtime_identity_json_not_blank",
+        ),
+        CheckConstraint(
+            "length(CAST(runtime_identity_json AS BLOB)) <= 8192",
+            name="ck_cv_final_confirmed_pdf_runtime_identity_json_size",
+        ),
+        UniqueConstraint(
+            "conversion_request_fingerprint", name="uq_cv_final_confirmed_pdf_request"
+        ),
+        Index("ix_cv_final_confirmed_pdf_owner", "owner_key_fingerprint"),
+        Index("ix_cv_final_confirmed_pdf_source_snapshot", "source_final_snapshot_fingerprint"),
+        Index("ix_cv_final_confirmed_pdf_blob", "blob_sha256"),
+    )
+
+
+class CvConfirmedPdfCurrentAuthorityRow(Base):
+    """The single product-facing current-PDF authority row per owner,
+    spanning both the legacy and the Final-DOCX-Snapshot lineages. Never
+    carries a polymorphic FK to ``current_artifact_fingerprint`` -- lineage
+    integrity is instead enforced entirely by trigger (see
+    ``cv_document_final_confirmed_pdf_sql_repository.py``)."""
+
+    __tablename__ = "cv_confirmed_pdf_current_authority"
+
+    owner_key_fingerprint: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("cv_document_artifact_owners.owner_key_fingerprint", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    lineage_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    current_artifact_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    slot_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[str] = mapped_column(String, nullable=False, default=_utcnow_iso)
+
+    __table_args__ = (
+        CheckConstraint(
+            "lineage_kind IN ('LEGACY_VALIDATED_DOCX', 'FINAL_DOCX_SNAPSHOT')",
+            name="ck_cv_confirmed_pdf_authority_lineage_kind",
+        ),
+        CheckConstraint(
+            _SHA256_CHECK.format(name="current_artifact_fingerprint"),
+            name="ck_cv_confirmed_pdf_authority_artifact_fp",
+        ),
+        CheckConstraint(
+            "slot_version >= 1",
+            name="ck_cv_confirmed_pdf_authority_slot_version",
+        ),
+        Index("ix_cv_confirmed_pdf_authority_artifact", "current_artifact_fingerprint"),
+    )
+
+
+FINAL_CONFIRMED_PDF_TABLE_NAMES: frozenset[str] = frozenset(
+    {
+        CvFinalConfirmedPdfArtifactRow.__tablename__,
+        CvConfirmedPdfCurrentAuthorityRow.__tablename__,
+    }
+)

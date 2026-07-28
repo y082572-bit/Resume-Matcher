@@ -25,9 +25,18 @@ from app.models import Base, MetricEvent
 # ``create_all``/preflight below -- see the P6-B1 section further down and
 # docs/explicit-provenance-stage-p6b1.md /
 # docs/explicit-provenance-stage-p6b1-final-docx-snapshot-storage-addendum.md.
-from app.services.cv_document_models import FINAL_DOCX_SNAPSHOT_TABLE_NAMES, P6B1_TABLE_NAMES
+from app.services.cv_document_models import (
+    FINAL_CONFIRMED_PDF_TABLE_NAMES,
+    FINAL_DOCX_SNAPSHOT_TABLE_NAMES,
+    P6B1_TABLE_NAMES,
+)
 from app.services.cv_document_final_snapshot_schema_manifest import (
     preflight_final_docx_snapshot_schema,
+)
+from app.services.cv_document_final_confirmed_pdf_cutover_state import (
+    FinalConfirmedPdfCutoverState,
+    evaluate_cutover_state as evaluate_final_confirmed_pdf_cutover_state,
+    run_cutover_installer as run_final_confirmed_pdf_cutover_installer,
 )
 from app.services.candidate_identity_binding_schema_manifest import (
     CANDIDATE_IDENTITY_BINDING_TABLE_NAME,
@@ -524,11 +533,31 @@ def _p6b1_existing_tables(conn: Any) -> set[str]:
     )
 
 
+def _strip_final_confirmed_pdf_triggers(table_manifest: dict[str, Any]) -> dict[str, Any]:
+    """Explicit Provenance Stage P6-B3b-A installs 3 legacy-freeze triggers
+    directly onto ``cv_document_pdf_slots`` -- a table this (P6-B1) manifest
+    already owns. P6-B1's own preflight must stay self-contained and
+    ordering-independent from a later, wholly separate stage's triggers, so
+    those specific trigger names are always excluded here before comparison
+    -- never compared against, in either the live or the reference manifest.
+    """
+
+    from app.services.cv_document_final_confirmed_pdf_schema_manifest import ALL_TRIGGER_NAMES
+
+    filtered = dict(table_manifest)
+    filtered["triggers"] = [
+        trigger for trigger in table_manifest["triggers"] if trigger["name"] not in ALL_TRIGGER_NAMES
+    ]
+    return filtered
+
+
 def _collect_p6b1_schema_manifest(conn: Any) -> dict[str, Any]:
     tables = {
         table: _collect_single_table_manifest(conn, table)
         for table in sorted(_P6B1_TABLE_COLUMNS)
     }
+    if "cv_document_pdf_slots" in tables:
+        tables["cv_document_pdf_slots"] = _strip_final_confirmed_pdf_triggers(tables["cv_document_pdf_slots"])
     return {"manifest_version": _P6B1_MANIFEST_VERSION, "tables": tables}
 
 
@@ -768,6 +797,7 @@ def init_models_sync(engine: Engine) -> None:
         and table.name not in _P6B1_TABLE_COLUMNS
         and table.name not in FINAL_DOCX_SNAPSHOT_TABLE_NAMES
         and table.name not in CANDIDATE_IDENTITY_BINDING_TABLE_NAMES
+        and table.name not in FINAL_CONFIRMED_PDF_TABLE_NAMES
     ]
 
     if p1_state == "ABSENT_CREATE_REQUIRED":
@@ -788,6 +818,7 @@ def init_models_sync(engine: Engine) -> None:
                 and table.name not in _P6B1_TABLE_COLUMNS
                 and table.name not in FINAL_DOCX_SNAPSHOT_TABLE_NAMES
                 and table.name not in CANDIDATE_IDENTITY_BINDING_TABLE_NAMES
+                and table.name not in FINAL_CONFIRMED_PDF_TABLE_NAMES
             ):
                 table.create(engine, checkfirst=True)
     else:  # Defensive: preflight raises for every non-ready existing state.
@@ -854,6 +885,28 @@ def init_models_sync(engine: Engine) -> None:
             "ERROR_INCOMPATIBLE_CANDIDATE_IDENTITY_BINDING_SCHEMA:"
             f"state={candidate_identity_binding_state}"
         )
+
+    # Explicit Provenance Stage P6-B3b-A -- final confirmed PDF storage and
+    # cross-line current authority. cv_final_confirmed_pdf_artifacts FKs into
+    # cv_document_artifact_owners/cv_docx_final_snapshots/cv_document_blobs
+    # (P6-B1 + the final-DOCX-snapshot addendum), all guaranteed to already
+    # exist by this point -- this block always runs strictly after every
+    # block above, never before. Unlike the blocks above, ABSENT here is
+    # never a single create_all call: run_final_confirmed_pdf_cutover_installer
+    # performs its own ordered, idempotent, resumable table/trigger/migration
+    # sequence (see cv_document_final_confirmed_pdf_cutover_state.py) and
+    # itself re-validates a final READY state, raising otherwise.
+    final_confirmed_pdf_state = evaluate_final_confirmed_pdf_cutover_state(engine)
+    if final_confirmed_pdf_state == FinalConfirmedPdfCutoverState.READY:
+        # Deliberately read-only for an existing, fully-installed cutover,
+        # same contract as every preflight above.
+        pass
+    elif final_confirmed_pdf_state == FinalConfirmedPdfCutoverState.INVALID:
+        raise RuntimeError(
+            f"ERROR_INCOMPATIBLE_FINAL_CONFIRMED_PDF_SCHEMA:state={final_confirmed_pdf_state}"
+        )
+    else:
+        run_final_confirmed_pdf_cutover_installer(engine)
 
     # ``create_all`` does not ALTER existing SQLite tables. Keep this additive
     # migration idempotent so older local databases can load resumes safely.

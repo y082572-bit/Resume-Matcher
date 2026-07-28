@@ -586,6 +586,11 @@ class PdfConfirmationBuildStatus(StrEnum):
     CONVERSION_FAILED = "CONVERSION_FAILED"
     TAMPERED_PDF_HASH = "TAMPERED_PDF_HASH"
     STALE_REVISION = "STALE_REVISION"
+    #: Explicit Provenance Stage P6-B3b-A: the legacy
+    #: ``cv_document_pdf_slots`` table has been permanently frozen by the
+    #: Final-Confirmed-PDF cutover -- never a transient condition, never
+    #: mapped from/onto ``STALE_REVISION``.
+    LEGACY_CURRENT_PDF_CUTOVER_FROZEN = "LEGACY_CURRENT_PDF_CUTOVER_FROZEN"
 
 
 class CvPdfConfirmationBuildResult(BaseModel):

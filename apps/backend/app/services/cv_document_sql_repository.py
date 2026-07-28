@@ -41,7 +41,7 @@ import hashlib
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -60,9 +60,14 @@ from app.schemas.cv_document_storage import (
     CvDocumentStorageOperationResult,
     DocumentArtifactStorageStatus,
 )
+from app.schemas.cv_document_final_confirmed_pdf import ConfirmedPdfLineageKind
 from app.services.cv_document_blob_store import CvDocumentBlobStore, CvDocumentStorageError
+from app.services.cv_document_final_confirmed_pdf_schema_manifest import (
+    CV_DOCUMENT_PDF_SLOT_FROZEN_CUTOVER_TOKEN,
+)
 from app.services.cv_document_models import (
     CvConfirmedPdfArtifactRow,
+    CvConfirmedPdfCurrentAuthorityRow,
     CvDocumentArtifactOwner,
     CvDocumentPdfSlot,
     CvDocumentProposalSlot,
@@ -79,6 +84,7 @@ from app.services.cv_document_pdf_confirmation_builder import compute_pdf_artifa
 from app.services.cv_document_proposal_builder import compute_proposal_artifact_fingerprint
 from app.services.cv_document_repository_protocol import (
     CasReplaceStatus,
+    CvDocumentPdfSlotCutoverStatus,
     PdfReplaceResult,
     ProposalReplaceResult,
     SnapshotSaveResult,
@@ -100,6 +106,17 @@ class _ConcurrentSlotMutation(Exception):
     matched at UPDATE time. Always caught within the same method and
     converted into ``CasReplaceStatus.STALE_REVISION`` -- never surfaced to
     a caller."""
+
+
+class _AuthorityBridgeConflict(Exception):
+    """Internal-only: Explicit Provenance Stage P6-B3b-A legacy-authority
+    write bridge -- the ``cv_confirmed_pdf_current_authority`` row was
+    absent-or-LEGACY at pre-read time but no longer matched (either raced
+    to ``FINAL_DOCX_SNAPSHOT``, or its ``slot_version`` moved) by the time
+    the bridge UPDATE ran. Always caught within the same method, which
+    rolls back the whole transaction (including the legacy slot CAS that
+    already succeeded) and re-classifies from a fresh authority read --
+    never surfaced to a caller."""
 
 
 class CvDocumentArtifactSqlRepository:
@@ -421,29 +438,47 @@ class CvDocumentArtifactSqlRepository:
     # -- PDF slot (reads) ------------------------------------------------------
 
     def get_current_pdf(self, owner_key: JobArtifactOwnerKey) -> ConfirmedCvPdfArtifact | None:
+        """Explicit Provenance Stage P6-B3b-A cross-line current-authority
+        bridge: reads exclusively from ``cv_confirmed_pdf_current_authority``
+        -- never from ``cv_document_pdf_slots``, which is frozen historical
+        data only. The returned ``ConfirmedCvPdfArtifact | None`` represents
+        exclusively the *legacy* (``LEGACY_VALIDATED_DOCX``) lineage view:
+        ``None`` is returned both when there is no current authority row at
+        all and when the current authority is the newer
+        ``FINAL_DOCX_SNAPSHOT`` lineage -- a caller must not treat this
+        method's ``None`` as proof no PDF exists at all for the owner.
+        """
         with self._session_factory() as session:
-            slot = session.get(CvDocumentPdfSlot, owner_key.owner_key_fingerprint)
-            if slot is None or slot.current_artifact_fingerprint is None:
+            authority = session.get(CvConfirmedPdfCurrentAuthorityRow, owner_key.owner_key_fingerprint)
+            if authority is None:
                 return None
-            row = session.get(CvConfirmedPdfArtifactRow, slot.current_artifact_fingerprint)
+            if authority.lineage_kind != ConfirmedPdfLineageKind.LEGACY_VALIDATED_DOCX.value:
+                return None
+            row = session.get(CvConfirmedPdfArtifactRow, authority.current_artifact_fingerprint)
             if row is None:
                 raise CvDocumentStorageError.of(
                     CvDocumentStorageErrorCode.STORAGE_METADATA_CONFLICT,
-                    "pdf slot points at a missing artifact row",
+                    "legacy current authority points at a missing artifact row",
                 )
             domain_owner_key = self._require_owner_key(session, owner_key.owner_key_fingerprint)
             return self._row_to_domain_pdf(row, domain_owner_key)
 
     def read_current_pdf_bytes(self, owner_key: JobArtifactOwnerKey) -> bytes | None:
+        """Same authority-first semantics as :meth:`get_current_pdf` --
+        exclusively the legacy lineage view. Returns ``None`` for no
+        authority row, a ``FINAL_DOCX_SNAPSHOT`` current authority, or a
+        legacy blob that fails to read back."""
         with self._session_factory() as session:
-            slot = session.get(CvDocumentPdfSlot, owner_key.owner_key_fingerprint)
-            if slot is None or slot.current_artifact_fingerprint is None:
+            authority = session.get(CvConfirmedPdfCurrentAuthorityRow, owner_key.owner_key_fingerprint)
+            if authority is None:
                 return None
-            row = session.get(CvConfirmedPdfArtifactRow, slot.current_artifact_fingerprint)
+            if authority.lineage_kind != ConfirmedPdfLineageKind.LEGACY_VALIDATED_DOCX.value:
+                return None
+            row = session.get(CvConfirmedPdfArtifactRow, authority.current_artifact_fingerprint)
             if row is None:
                 raise CvDocumentStorageError.of(
                     CvDocumentStorageErrorCode.STORAGE_METADATA_CONFLICT,
-                    "pdf slot points at a missing artifact row",
+                    "legacy current authority points at a missing artifact row",
                 )
             read_result = self._blob_store.read_blob(row.blob_sha256)
             if not read_result.success:
@@ -514,6 +549,49 @@ class CvDocumentArtifactSqlRepository:
                 try:
                     with session.begin():
                         self._ensure_owner(session, owner_key)
+
+                        # Explicit Provenance Stage P6-B3b-A legacy-authority
+                        # write bridge, step 1-2: pre-read cross-line current
+                        # authority before ever touching the legacy slot. A
+                        # FINAL_DOCX_SNAPSHOT current authority permanently
+                        # blocks this legacy write path -- no legacy slot
+                        # mutation, no artifact insert, nothing to roll back.
+                        #
+                        # ``cv_confirmed_pdf_current_authority`` is only
+                        # guaranteed to exist once the P6-B3b-A cutover
+                        # installer has run (always true in production,
+                        # where ``db_engine.init_models_sync`` runs it before
+                        # any request is ever served). A database that
+                        # predates that cutover (or a test fixture modeling
+                        # exactly that pre-cutover state) may not have the
+                        # table yet -- the bridge is then simply inactive,
+                        # and this call behaves exactly as it did before
+                        # this remediation.
+                        authority_table_exists = (
+                            session.execute(
+                                text(
+                                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                                    "AND name='cv_confirmed_pdf_current_authority'"
+                                )
+                            ).first()
+                            is not None
+                        )
+                        authority_row = None
+                        captured_authority_slot_version = None
+                        if authority_table_exists:
+                            authority_row = session.get(
+                                CvConfirmedPdfCurrentAuthorityRow, owner_key.owner_key_fingerprint
+                            )
+                            if (
+                                authority_row is not None
+                                and authority_row.lineage_kind == ConfirmedPdfLineageKind.FINAL_DOCX_SNAPSHOT.value
+                            ):
+                                return PdfReplaceResult(
+                                    status=CvDocumentPdfSlotCutoverStatus.LEGACY_CURRENT_PDF_CUTOVER_FROZEN
+                                )
+                            captured_authority_slot_version = (
+                                authority_row.slot_version if authority_row is not None else None
+                            )
 
                         snapshot_row = session.get(
                             CvDocxValidatedSnapshotRow, artifact.source_validated_docx_snapshot_fingerprint
@@ -601,7 +679,81 @@ class CvDocumentArtifactSqlRepository:
                             )
                             if result.rowcount != 1:
                                 raise _ConcurrentSlotMutation()
-                except (IntegrityError, _ConcurrentSlotMutation):
+
+                        # Explicit Provenance Stage P6-B3b-A legacy-authority
+                        # write bridge, step 4-5: the legacy slot CAS above
+                        # has already succeeded (and, transitively, already
+                        # tripped the freeze trigger via IntegrityError if
+                        # cv_document_pdf_slots is frozen) -- now synchronize
+                        # cv_confirmed_pdf_current_authority to the same
+                        # target artifact, atomically in this same
+                        # transaction. A no-op if the table does not exist
+                        # yet (bridge inactive; see the pre-read comment
+                        # above).
+                        if authority_table_exists:
+                            if authority_row is None:
+                                session.add(
+                                    CvConfirmedPdfCurrentAuthorityRow(
+                                        owner_key_fingerprint=owner_key.owner_key_fingerprint,
+                                        lineage_kind=ConfirmedPdfLineageKind.LEGACY_VALIDATED_DOCX.value,
+                                        current_artifact_fingerprint=artifact.artifact_fingerprint,
+                                        slot_version=1,
+                                        updated_at=_utcnow_iso(),
+                                    )
+                                )
+                                session.flush()
+                            else:
+                                authority_result = session.execute(
+                                    update(CvConfirmedPdfCurrentAuthorityRow)
+                                    .where(
+                                        CvConfirmedPdfCurrentAuthorityRow.owner_key_fingerprint
+                                        == owner_key.owner_key_fingerprint,
+                                        CvConfirmedPdfCurrentAuthorityRow.lineage_kind
+                                        == ConfirmedPdfLineageKind.LEGACY_VALIDATED_DOCX.value,
+                                        CvConfirmedPdfCurrentAuthorityRow.slot_version
+                                        == captured_authority_slot_version,
+                                    )
+                                    .values(
+                                        current_artifact_fingerprint=artifact.artifact_fingerprint,
+                                        slot_version=captured_authority_slot_version + 1,
+                                        updated_at=_utcnow_iso(),
+                                    )
+                                )
+                                if authority_result.rowcount != 1:
+                                    raise _AuthorityBridgeConflict()
+                except _ConcurrentSlotMutation:
+                    return PdfReplaceResult(
+                        status=CasReplaceStatus.STALE_REVISION,
+                        current_artifact=self._reread_current_pdf_domain(session, owner_key),
+                    )
+                except _AuthorityBridgeConflict:
+                    # The whole transaction (legacy slot CAS + artifact
+                    # insert + this bridge attempt) has already been rolled
+                    # back by the `with session.begin():` context manager --
+                    # a fresh read on this same session now reflects
+                    # genuinely current committed state.
+                    fresh_authority = session.get(
+                        CvConfirmedPdfCurrentAuthorityRow, owner_key.owner_key_fingerprint
+                    )
+                    if (
+                        fresh_authority is not None
+                        and fresh_authority.lineage_kind == ConfirmedPdfLineageKind.FINAL_DOCX_SNAPSHOT.value
+                    ):
+                        return PdfReplaceResult(
+                            status=CvDocumentPdfSlotCutoverStatus.LEGACY_CURRENT_PDF_CUTOVER_FROZEN
+                        )
+                    return PdfReplaceResult(
+                        status=CasReplaceStatus.STALE_REVISION,
+                        current_artifact=self._reread_current_pdf_domain(session, owner_key),
+                    )
+                except IntegrityError as exc:
+                    if CV_DOCUMENT_PDF_SLOT_FROZEN_CUTOVER_TOKEN in str(exc):
+                        # Explicit Provenance Stage P6-B3b-A: the legacy
+                        # cv_document_pdf_slots table has been frozen by the
+                        # Final-Confirmed-PDF cutover -- a permanent terminal
+                        # status, never STALE_REVISION, never resolved by a
+                        # retry.
+                        return PdfReplaceResult(status=CvDocumentPdfSlotCutoverStatus.LEGACY_CURRENT_PDF_CUTOVER_FROZEN)
                     return PdfReplaceResult(
                         status=CasReplaceStatus.STALE_REVISION,
                         current_artifact=self._reread_current_pdf_domain(session, owner_key),

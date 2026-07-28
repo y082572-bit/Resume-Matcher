@@ -22,7 +22,11 @@ from app.schemas.cv_document_artifact import (
     ValidatedCvDocxSnapshot,
 )
 from app.services.cv_document_adapters import CvPdfConversionAdapter
-from app.services.cv_document_repository_protocol import CasReplaceStatus, CvDocumentArtifactRepository
+from app.services.cv_document_repository_protocol import (
+    CasReplaceStatus,
+    CvDocumentArtifactRepository,
+    CvDocumentPdfSlotCutoverStatus,
+)
 from app.services.truth_fingerprint import canonical_json_bytes
 
 
@@ -135,10 +139,18 @@ def build_and_confirm_pdf(
     replace_result = repository.replace_current_pdf(
         owner_key, artifact, attempt.pdf_bytes, expected_previous_revision
     )
-    if replace_result.status != CasReplaceStatus.REPLACED:
+    if replace_result.status == CasReplaceStatus.REPLACED:
+        return CvPdfConfirmationBuildResult(status=PdfConfirmationBuildStatus.CONFIRMED, artifact=artifact)
+    if replace_result.status == CasReplaceStatus.STALE_REVISION:
         return CvPdfConfirmationBuildResult(
             status=PdfConfirmationBuildStatus.STALE_REVISION,
             diagnostics=("expected_previous_revision did not match the repository's current PDF revision",),
         )
-
-    return CvPdfConfirmationBuildResult(status=PdfConfirmationBuildStatus.CONFIRMED, artifact=artifact)
+    if replace_result.status == CvDocumentPdfSlotCutoverStatus.LEGACY_CURRENT_PDF_CUTOVER_FROZEN:
+        return CvPdfConfirmationBuildResult(
+            status=PdfConfirmationBuildStatus.LEGACY_CURRENT_PDF_CUTOVER_FROZEN,
+            diagnostics=(
+                "the legacy cv_document_pdf_slots table has been frozen by the Final-Confirmed-PDF cutover",
+            ),
+        )
+    raise AssertionError(f"unmapped PdfReplaceResult.status: {replace_result.status!r}")

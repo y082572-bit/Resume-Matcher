@@ -55,6 +55,16 @@ class CasReplaceStatus(StrEnum):
     STALE_REVISION = "STALE_REVISION"
 
 
+class CvDocumentPdfSlotCutoverStatus(StrEnum):
+    """Explicit Provenance Stage P6-B3b-A: the permanent terminal status
+    ``replace_current_pdf`` reports once the legacy ``cv_document_pdf_slots``
+    table has been frozen by the Final-Confirmed-PDF cutover -- never a
+    transient condition, never mapped onto ``CasReplaceStatus.STALE_REVISION``,
+    and never resolved by a retry."""
+
+    LEGACY_CURRENT_PDF_CUTOVER_FROZEN = "LEGACY_CURRENT_PDF_CUTOVER_FROZEN"
+
+
 class ProposalReplaceResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -65,7 +75,7 @@ class ProposalReplaceResult(BaseModel):
 class PdfReplaceResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    status: CasReplaceStatus
+    status: CasReplaceStatus | CvDocumentPdfSlotCutoverStatus
     current_artifact: ConfirmedCvPdfArtifact | None = None
 
 

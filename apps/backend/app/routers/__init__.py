@@ -2,6 +2,7 @@
 
 from app.routers.applications import router as applications_router
 from app.routers.config import router as config_router
+from app.routers.cv_documents import router as cv_documents_router
 from app.routers.enrichment import router as enrichment_router
 from app.routers.health import router as health_router
 from app.routers.jobs import router as jobs_router
@@ -20,4 +21,5 @@ __all__ = [
     "resume_wizard_router",
     "metrics_router",
     "career_positioning_router",
+    "cv_documents_router",
 ]

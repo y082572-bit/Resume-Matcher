@@ -587,6 +587,59 @@ def test_blob_referenced_only_by_a_proposal_is_not_orphan(env) -> None:
     assert CvDocumentReconciliationIssueCode.ORPHAN_FILESYSTEM_BLOB not in _issue_codes(report)
 
 
+def _make_final_confirmed_pdf_artifact(owner_key, final_snapshot, pdf_bytes: bytes, *, identity=None):
+    from app.schemas.cv_document_final_confirmed_pdf import build_final_confirmed_pdf_artifact
+    from app.schemas.cv_document_pdf_conversion_runtime import build_converter_runtime_identity
+
+    runtime_identity = identity or build_converter_runtime_identity(
+        implementation_id="libreoffice",
+        implementation_version="7.6",
+        executable_canonical_path="/usr/bin/soffice",
+        executable_file_identity="dev:1,inode:2",
+        executable_sha256="a" * 64,
+        platform_identity="darwin-arm64",
+        font_environment_id="fonts-v1",
+    )
+    return build_final_confirmed_pdf_artifact(
+        owner_key=owner_key,
+        source_final_snapshot_fingerprint=final_snapshot.final_snapshot_fingerprint,
+        source_final_docx_sha256=final_snapshot.final_docx_sha256,
+        runtime_identity=runtime_identity,
+        conversion_policy_version="final-confirmed-pdf-policy-v1",
+        pdf_sha256=_sha256(pdf_bytes),
+    )
+
+
+def test_blob_referenced_only_by_a_final_confirmed_pdf_artifact_is_not_orphan(env) -> None:
+    from app.services.cv_document_final_confirmed_pdf_sql_repository import FinalConfirmedPdfSqlRepository
+    from app.services.cv_document_final_snapshot_sql_repository import FinalDocxSnapshotSqlRepository
+
+    repo, session_factory, store, engine = env
+    final_repo = FinalDocxSnapshotSqlRepository(session_factory, store)
+    pdf_repo = FinalConfirmedPdfSqlRepository(session_factory, store)
+
+    owner_key = _owner_key()
+    proposal = _make_proposal(owner_key, 1, b"final-confirmed-pdf-only proposal base")
+    repo.replace_current_proposal(owner_key, proposal, b"final-confirmed-pdf-only proposal base", None)
+
+    final_bytes = b"final docx bytes backing a final-confirmed-pdf-only blob test"
+    final_snapshot = _make_final_snapshot(owner_key, proposal, final_bytes)
+    save_result = final_repo.save_final_docx_snapshot(final_snapshot, final_bytes)
+    assert save_result.status.value == "SAVED"
+
+    # These exact PDF bytes are never used as a proposal/snapshot/legacy-pdf
+    # blob anywhere -- the only row referencing this content hash is the new
+    # FinalConfirmedPdfArtifact line.
+    pdf_bytes = b"%PDF-1.4 bytes referenced only by a final confirmed pdf artifact"
+    artifact = _make_final_confirmed_pdf_artifact(owner_key, final_snapshot, pdf_bytes)
+    artifact_save_result = pdf_repo.save_artifact(artifact, pdf_bytes)
+    assert artifact_save_result.status.value == "SAVED"
+
+    report = run_reconciliation(session_factory, store)
+    assert CvDocumentReconciliationIssueCode.ORPHAN_BLOB_ROW not in _issue_codes(report)
+    assert CvDocumentReconciliationIssueCode.ORPHAN_FILESYSTEM_BLOB not in _issue_codes(report)
+
+
 def test_blob_referenced_only_by_a_pdf_is_not_orphan(env) -> None:
     repo, session_factory, store, _ = env
     owner_key = _owner_key()

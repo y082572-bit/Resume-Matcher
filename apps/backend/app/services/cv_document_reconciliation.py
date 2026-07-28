@@ -33,6 +33,7 @@ from app.services.cv_document_models import (
     CvDocxFinalSnapshotRow,
     CvDocxProposalArtifactRow,
     CvDocxValidatedSnapshotRow,
+    CvFinalConfirmedPdfArtifactRow,
 )
 
 
@@ -68,6 +69,15 @@ def run_reconciliation(
         # orphan here -- every other final-snapshot-specific invariant is
         # exclusively cv_document_final_snapshot_reconciliation.py's concern.
         final_snapshot_rows = list(session.execute(select(CvDocxFinalSnapshotRow)).scalars())
+        # Explicit Provenance Stage P6-B3b-B: read-only, solely to extend the
+        # global referenced-blob set below so a blob referenced only by a
+        # Final Confirmed PDF artifact is never misreported as an orphan
+        # here -- every other Final Confirmed PDF-specific invariant is
+        # exclusively cv_document_final_confirmed_pdf_reconciliation.py's
+        # concern. The referenced identity is always blob_sha256, never
+        # pdf_sha256 -- the storage contract's source of truth, despite the
+        # CHECK-enforced equality between the two columns.
+        final_confirmed_pdf_rows = list(session.execute(select(CvFinalConfirmedPdfArtifactRow)).scalars())
         blob_rows = list(session.execute(select(CvDocumentBlob)).scalars())
         proposal_slots = list(session.execute(select(CvDocumentProposalSlot)).scalars())
         pdf_slots = list(session.execute(select(CvDocumentPdfSlot)).scalars())
@@ -192,6 +202,7 @@ def run_reconciliation(
         referenced_blob_shas.update(row.blob_sha256 for row in snapshot_rows)
         referenced_blob_shas.update(row.blob_sha256 for row in pdf_rows)
         referenced_blob_shas.update(row.final_docx_sha256 for row in final_snapshot_rows)
+        referenced_blob_shas.update(row.blob_sha256 for row in final_confirmed_pdf_rows)
         for row in blob_rows:
             if row.blob_sha256 not in referenced_blob_shas:
                 issues.append(

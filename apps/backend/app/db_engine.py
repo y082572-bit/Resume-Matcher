@@ -26,6 +26,7 @@ from app.models import Base, MetricEvent
 # docs/explicit-provenance-stage-p6b1.md /
 # docs/explicit-provenance-stage-p6b1-final-docx-snapshot-storage-addendum.md.
 from app.services.cv_document_models import (
+    APPROVED_CONTENT_PACKAGE_TABLE_NAMES,
     FINAL_CONFIRMED_PDF_TABLE_NAMES,
     FINAL_DOCX_SNAPSHOT_TABLE_NAMES,
     P6B1_TABLE_NAMES,
@@ -41,6 +42,11 @@ from app.services.cv_document_final_confirmed_pdf_cutover_state import (
 from app.services.candidate_identity_binding_schema_manifest import (
     CANDIDATE_IDENTITY_BINDING_TABLE_NAME,
     preflight_candidate_identity_binding_schema,
+)
+from app.services.cv_approved_content_package_cutover_state import (
+    ApprovedContentPackageCutoverState,
+    evaluate_cutover_state as evaluate_approved_content_package_cutover_state,
+    run_cutover_installer as run_approved_content_package_cutover_installer,
 )
 
 __all__ = [
@@ -798,6 +804,7 @@ def init_models_sync(engine: Engine) -> None:
         and table.name not in FINAL_DOCX_SNAPSHOT_TABLE_NAMES
         and table.name not in CANDIDATE_IDENTITY_BINDING_TABLE_NAMES
         and table.name not in FINAL_CONFIRMED_PDF_TABLE_NAMES
+        and table.name not in APPROVED_CONTENT_PACKAGE_TABLE_NAMES
     ]
 
     if p1_state == "ABSENT_CREATE_REQUIRED":
@@ -819,6 +826,7 @@ def init_models_sync(engine: Engine) -> None:
                 and table.name not in FINAL_DOCX_SNAPSHOT_TABLE_NAMES
                 and table.name not in CANDIDATE_IDENTITY_BINDING_TABLE_NAMES
                 and table.name not in FINAL_CONFIRMED_PDF_TABLE_NAMES
+                and table.name not in APPROVED_CONTENT_PACKAGE_TABLE_NAMES
             ):
                 table.create(engine, checkfirst=True)
     else:  # Defensive: preflight raises for every non-ready existing state.
@@ -907,6 +915,28 @@ def init_models_sync(engine: Engine) -> None:
         )
     else:
         run_final_confirmed_pdf_cutover_installer(engine)
+
+    # Explicit Provenance Stage P6-C1b-A -- Approved Content Package
+    # foundation. ``cv_approved_content_packages`` FKs into
+    # ``cv_document_artifact_owners`` (P6-B1), guaranteed to already exist by
+    # this point -- this block always runs strictly after every block above,
+    # never before. Same non-repairing contract as the final-confirmed-PDF
+    # cutover immediately above: ABSENT is never a single create_all call,
+    # run_approved_content_package_cutover_installer performs its own
+    # ordered, idempotent, resumable table/trigger sequence (see
+    # cv_approved_content_package_cutover_state.py) and itself re-validates a
+    # final READY state, raising otherwise.
+    approved_content_package_state = evaluate_approved_content_package_cutover_state(engine)
+    if approved_content_package_state == ApprovedContentPackageCutoverState.READY:
+        # Deliberately read-only for an existing, fully-installed cutover,
+        # same contract as every preflight above.
+        pass
+    elif approved_content_package_state == ApprovedContentPackageCutoverState.INVALID:
+        raise RuntimeError(
+            f"ERROR_INCOMPATIBLE_APPROVED_CONTENT_PACKAGE_SCHEMA:state={approved_content_package_state}"
+        )
+    else:
+        run_approved_content_package_cutover_installer(engine)
 
     # ``create_all`` does not ALTER existing SQLite tables. Keep this additive
     # migration idempotent so older local databases can load resumes safely.

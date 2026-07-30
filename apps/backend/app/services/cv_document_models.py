@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from sqlalchemy import (
     CheckConstraint,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -756,5 +757,156 @@ FINAL_CONFIRMED_PDF_TABLE_NAMES: frozenset[str] = frozenset(
     {
         CvFinalConfirmedPdfArtifactRow.__tablename__,
         CvConfirmedPdfCurrentAuthorityRow.__tablename__,
+    }
+)
+
+
+# ---------------------------------------------------------------------------
+# Explicit Provenance Stage P6-C1b-A -- Approved Content Package foundation.
+#
+# Two wholly new, additive tables. ``cv_approved_content_packages`` is an
+# immutable, content-addressed snapshot of one already-validated
+# ``ApprovedContentDocumentInput`` (never itself embedding that envelope --
+# see ``cv_approved_content_package.ApprovedContentPackagePayload``).
+# ``cv_approved_content_current_authority`` is the single current-package
+# pointer per owner, independent of every other current-slot table in this
+# module (``cv_document_proposal_slots``/``cv_document_pdf_slots``/
+# ``cv_confirmed_pdf_current_authority``). Both tables' full DDL (including
+# every CHECK/FK/UNIQUE/index and all six triggers) is independently
+# hand-written in ``cv_approved_content_package_schema_manifest.py`` -- these
+# ORM classes exist only so
+# ``cv_approved_content_package_cutover_state.py``'s installer can issue
+# ``Table.create(engine, checkfirst=True)``; they are never trusted as the
+# schema's source of truth.
+# ---------------------------------------------------------------------------
+
+
+class CvApprovedContentPackageRow(Base):
+    """One immutable ``ApprovedContentPackage`` row. Never carries an
+    ``is_current``/``superseded``/``deleted``/status column -- current
+    status is exclusively expressed by
+    ``cv_approved_content_current_authority``."""
+
+    __tablename__ = "cv_approved_content_packages"
+
+    package_fingerprint: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_key_fingerprint: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("cv_document_artifact_owners.owner_key_fingerprint", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    owner_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    document_input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    approval_decisions_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    fact_selection_identity_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload_byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    package_fingerprint_schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    package_schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    package_policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False, default=_utcnow_iso)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_key_fingerprint",
+            "package_fingerprint",
+            name="uq_cv_approved_content_packages_owner_package",
+        ),
+        CheckConstraint(
+            _SHA256_CHECK.format(name="package_fingerprint"),
+            name="ck_cv_approved_content_packages_fingerprint",
+        ),
+        CheckConstraint(
+            _SHA256_CHECK.format(name="owner_key_fingerprint"),
+            name="ck_cv_approved_content_packages_owner_fingerprint",
+        ),
+        CheckConstraint(
+            "owner_kind IN ('JOB', 'APPLICATION')",
+            name="ck_cv_approved_content_packages_owner_kind",
+        ),
+        CheckConstraint(
+            _SHA256_CHECK.format(name="document_input_fingerprint"),
+            name="ck_cv_approved_content_packages_document_input_fp",
+        ),
+        CheckConstraint(
+            _SHA256_CHECK.format(name="approval_decisions_fingerprint"),
+            name="ck_cv_approved_content_packages_approval_decisions_fp",
+        ),
+        CheckConstraint(
+            _SHA256_CHECK.format(name="fact_selection_identity_fingerprint"),
+            name="ck_cv_approved_content_packages_fact_selection_identity_fp",
+        ),
+        CheckConstraint(
+            _SHA256_CHECK.format(name="payload_sha256"),
+            name="ck_cv_approved_content_packages_payload_sha256",
+        ),
+        CheckConstraint(
+            "payload_byte_size > 0 AND payload_byte_size <= 1048576",
+            name="ck_cv_approved_content_packages_payload_size_bounds",
+        ),
+        CheckConstraint(
+            "payload_byte_size = length(CAST(payload_json AS BLOB))",
+            name="ck_cv_approved_content_packages_payload_size_eq_bytes",
+        ),
+        CheckConstraint(
+            "package_fingerprint_schema_version = 'cv-approved-content-package-fingerprint-v1'",
+            name="ck_cv_approved_content_packages_fingerprint_version",
+        ),
+        CheckConstraint(
+            "package_schema_version = 'cv-approved-content-package-schema-v1'",
+            name="ck_cv_approved_content_packages_schema_version",
+        ),
+        CheckConstraint(
+            "package_policy_version = 'cv-approved-content-package-policy-v1'",
+            name="ck_cv_approved_content_packages_policy_version",
+        ),
+        Index("ix_cv_approved_content_packages_owner", "owner_key_fingerprint"),
+    )
+
+
+class CvApprovedContentCurrentAuthorityRow(Base):
+    """The single current-Approved-Content-Package pointer row per owner.
+    Enforces exact-pair (owner, package) integrity by both a composite FK
+    into ``cv_approved_content_packages`` and mirrored triggers (see
+    ``cv_approved_content_package_schema_manifest.py``)."""
+
+    __tablename__ = "cv_approved_content_current_authority"
+
+    owner_key_fingerprint: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("cv_document_artifact_owners.owner_key_fingerprint", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    current_package_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    slot_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[str] = mapped_column(String, nullable=False, default=_utcnow_iso)
+
+    __table_args__ = (
+        CheckConstraint(
+            _SHA256_CHECK.format(name="current_package_fingerprint"),
+            name="ck_cv_approved_content_authority_package_fp",
+        ),
+        CheckConstraint(
+            "slot_version >= 1",
+            name="ck_cv_approved_content_authority_slot_version",
+        ),
+        ForeignKeyConstraint(
+            ["owner_key_fingerprint", "current_package_fingerprint"],
+            [
+                "cv_approved_content_packages.owner_key_fingerprint",
+                "cv_approved_content_packages.package_fingerprint",
+            ],
+            ondelete="RESTRICT",
+            name="fk_cv_approved_content_authority_owner_package",
+        ),
+        Index("ix_cv_approved_content_authority_package", "current_package_fingerprint"),
+    )
+
+
+APPROVED_CONTENT_PACKAGE_TABLE_NAMES: frozenset[str] = frozenset(
+    {
+        CvApprovedContentPackageRow.__tablename__,
+        CvApprovedContentCurrentAuthorityRow.__tablename__,
     }
 )
